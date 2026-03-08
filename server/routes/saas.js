@@ -287,4 +287,121 @@ router.get('/servers/available', verifyToken, requireRole('saas_admin'), (req, r
   }
 });
 
+// ==================== 订单管理 ====================
+
+router.get('/orders', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const { page = 1, pageSize = 20, status, keyword } = req.query;
+    let where = 'WHERE 1=1'; const params = [];
+    if (status) { where += ' AND status=?'; params.push(status); }
+    if (keyword) { where += ' AND (order_no LIKE ? OR tenant_name LIKE ? OR enterprise_id LIKE ?)'; params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`); }
+    const total = db.prepare(`SELECT COUNT(*) as count FROM orders ${where}`).get(...params).count;
+    const offset = (page - 1) * pageSize;
+    const list = db.prepare(`SELECT * FROM orders ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, Number(pageSize), offset);
+    res.json({ code: 200, data: { total, page: Number(page), pageSize: Number(pageSize), list } });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+router.post('/orders', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const { enterprise_id, plan, period, amount, remark } = req.body;
+    if (!enterprise_id) return res.json({ code: 400, message: '企业ID不能为空' });
+    const tenant = db.prepare('SELECT id, name FROM tenants WHERE enterprise_id=?').get(enterprise_id);
+    const orderNo = 'ORD' + Date.now().toString().slice(-8) + Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+    const orderId = uuidv4();
+    db.prepare('INSERT INTO orders (id, order_no, tenant_id, enterprise_id, tenant_name, plan, period, amount, status, remark) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      .run(orderId, orderNo, tenant ? tenant.id : null, enterprise_id, tenant ? tenant.name : enterprise_id, plan || 'basic', period || 'monthly', amount || 0, 'pending', remark || '');
+    res.json({ code: 200, message: '订单创建成功', data: { id: orderId, order_no: orderNo } });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+router.put('/orders/:id', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const { status, remark } = req.body;
+    const updates = [];
+    const params = [];
+    if (status) { updates.push('status=?'); params.push(status); if (status === 'paid' || status === 'completed') { updates.push('paid_at=CURRENT_TIMESTAMP'); } }
+    if (remark !== undefined) { updates.push('remark=?'); params.push(remark); }
+    updates.push('updated_at=CURRENT_TIMESTAMP');
+    params.push(req.params.id);
+    db.prepare(`UPDATE orders SET ${updates.join(',')} WHERE id=?`).run(...params);
+    res.json({ code: 200, message: '更新成功' });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+router.delete('/orders/:id', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    db.prepare('DELETE FROM orders WHERE id=?').run(req.params.id);
+    res.json({ code: 200, message: '删除成功' });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+// ==================== 系统设置 ====================
+
+router.get('/settings', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const rows = db.prepare('SELECT key, value FROM saas_settings').all();
+    const settings = {};
+    for (const row of rows) {
+      // 尝试解析为原始类型
+      if (row.value === 'true') settings[row.key] = true;
+      else if (row.value === 'false') settings[row.key] = false;
+      else if (!isNaN(row.value) && row.value !== '') settings[row.key] = Number(row.value);
+      else settings[row.key] = row.value;
+    }
+    // 获取管理员列表
+    const admins = db.prepare('SELECT id, username, nickname, role, status, created_at FROM saas_admins ORDER BY created_at').all();
+    settings.admins = admins;
+    res.json({ code: 200, data: settings });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+router.put('/settings', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const upsert = db.prepare('INSERT INTO saas_settings (id, key, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP');
+    for (const [key, value] of Object.entries(req.body)) {
+      upsert.run(uuidv4(), key, String(value));
+    }
+    res.json({ code: 200, message: '设置已保存' });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+// ==================== 管理员管理 ====================
+
+router.post('/admins', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const { username, password, nickname } = req.body;
+    if (!username || !password) return res.json({ code: 400, message: '用户名和密码不能为空' });
+    const existing = db.prepare('SELECT id FROM saas_admins WHERE username=?').get(username);
+    if (existing) return res.json({ code: 409, message: '用户名已存在' });
+    const id = uuidv4();
+    db.prepare('INSERT INTO saas_admins (id, username, password, nickname, role) VALUES (?,?,?,?,?)')
+      .run(id, username, bcrypt.hashSync(password, 10), nickname || username, 'admin');
+    res.json({ code: 200, message: '添加成功', data: { id } });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+router.put('/admins/:id', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const { nickname, password, status } = req.body;
+    if (password) {
+      db.prepare('UPDATE saas_admins SET nickname=COALESCE(?,nickname), password=?, status=COALESCE(?,status), updated_at=CURRENT_TIMESTAMP WHERE id=?')
+        .run(nickname, bcrypt.hashSync(password, 10), status, req.params.id);
+    } else {
+      db.prepare('UPDATE saas_admins SET nickname=COALESCE(?,nickname), status=COALESCE(?,status), updated_at=CURRENT_TIMESTAMP WHERE id=?')
+        .run(nickname, status, req.params.id);
+    }
+    res.json({ code: 200, message: '更新成功' });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+router.delete('/admins/:id', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const admin = db.prepare('SELECT role FROM saas_admins WHERE id=?').get(req.params.id);
+    if (admin && admin.role === 'super_admin') return res.json({ code: 403, message: '不能删除超级管理员' });
+    db.prepare('DELETE FROM saas_admins WHERE id=?').run(req.params.id);
+    res.json({ code: 200, message: '删除成功' });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
 module.exports = router;

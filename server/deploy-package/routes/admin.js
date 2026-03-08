@@ -210,4 +210,95 @@ router.get('/chat-records/user/:userId', verifyToken, requireRole('enterprise_ad
   } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
 });
 
+// ==================== 群组管理 ====================
+
+router.get('/groups', verifyToken, requireRole('enterprise_admin'), (req, res) => {
+  try {
+    const { keyword, page = 1, pageSize = 50 } = req.query;
+    let where = "WHERE c.type IN ('group','notice')"; const params = [];
+    if (keyword) { where += ' AND c.name LIKE ?'; params.push(`%${keyword}%`); }
+    const groups = db.prepare(`
+      SELECT c.id, c.type, c.name, c.avatar, c.created_by, c.created_at,
+        (SELECT COUNT(*) FROM conversation_members cm WHERE cm.conversation_id=c.id) as member_count,
+        (SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id AND m.created_at >= date('now')) as today_messages,
+        (SELECT u.nickname FROM users u WHERE u.id=c.created_by) as owner_name,
+        COALESCE((SELECT 'disbanded' FROM conversation_members cm2 WHERE cm2.conversation_id=c.id LIMIT 0), 'active') as status
+      FROM conversations c ${where} ORDER BY c.created_at DESC
+    `).all(...params);
+    // 添加额外字段
+    groups.forEach(g => {
+      g.max_members = 500;
+      g.description = '';
+    });
+    res.json({ code: 200, data: { list: groups } });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+router.post('/groups', verifyToken, requireRole('enterprise_admin'), (req, res) => {
+  try {
+    const { name, type, description, max_members } = req.body;
+    if (!name) return res.json({ code: 400, message: '群组名称不能为空' });
+    const groupId = uuidv4();
+    db.prepare('INSERT INTO conversations (id, type, name, created_by) VALUES (?,?,?,?)')
+      .run(groupId, type || 'group', name, req.user.id);
+    res.json({ code: 200, message: '创建成功', data: { id: groupId } });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+router.put('/groups/:id', verifyToken, requireRole('enterprise_admin'), (req, res) => {
+  try {
+    const { name, description, max_members, status } = req.body;
+    db.prepare('UPDATE conversations SET name=COALESCE(?,name), updated_at=CURRENT_TIMESTAMP WHERE id=?')
+      .run(name, req.params.id);
+    res.json({ code: 200, message: '更新成功' });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+router.delete('/groups/:id', verifyToken, requireRole('enterprise_admin'), (req, res) => {
+  try {
+    db.prepare('DELETE FROM messages WHERE conversation_id=?').run(req.params.id);
+    db.prepare('DELETE FROM conversation_members WHERE conversation_id=?').run(req.params.id);
+    db.prepare('DELETE FROM conversations WHERE id=?').run(req.params.id);
+    res.json({ code: 200, message: '删除成功' });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+// 群成员管理
+router.get('/groups/:id/members', verifyToken, requireRole('enterprise_admin'), (req, res) => {
+  try {
+    const members = db.prepare(`
+      SELECT cm.id, cm.user_id, u.username, u.nickname, u.avatar,
+        CASE WHEN c.created_by = cm.user_id THEN 'owner' ELSE 'member' END as role
+      FROM conversation_members cm
+      JOIN users u ON cm.user_id = u.id
+      JOIN conversations c ON cm.conversation_id = c.id
+      WHERE cm.conversation_id = ?
+      ORDER BY role DESC, cm.joined_at
+    `).all(req.params.id);
+    res.json({ code: 200, data: members });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+router.post('/groups/:id/members', verifyToken, requireRole('enterprise_admin'), (req, res) => {
+  try {
+    const { user_id } = req.body;
+    // 支持用户名或ID
+    let user = db.prepare('SELECT id FROM users WHERE id=?').get(user_id);
+    if (!user) user = db.prepare('SELECT id FROM users WHERE username=?').get(user_id);
+    if (!user) return res.json({ code: 404, message: '用户不存在' });
+    const existing = db.prepare('SELECT id FROM conversation_members WHERE conversation_id=? AND user_id=?').get(req.params.id, user.id);
+    if (existing) return res.json({ code: 409, message: '该用户已在群中' });
+    db.prepare('INSERT INTO conversation_members (id, conversation_id, user_id) VALUES (?,?,?)')
+      .run(uuidv4(), req.params.id, user.id);
+    res.json({ code: 200, message: '添加成功' });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
+router.delete('/groups/:id/members/:userId', verifyToken, requireRole('enterprise_admin'), (req, res) => {
+  try {
+    db.prepare('DELETE FROM conversation_members WHERE conversation_id=? AND user_id=?').run(req.params.id, req.params.userId);
+    res.json({ code: 200, message: '移除成功' });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
 module.exports = router;

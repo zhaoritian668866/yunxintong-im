@@ -5,6 +5,8 @@ import 'saas_dashboard_page.dart';
 import 'saas_tenant_page.dart';
 import 'saas_server_page.dart';
 import 'saas_deploy_page.dart';
+import 'saas_orders_page.dart';
+import 'saas_settings_page.dart';
 
 class SaasAdminPage extends StatefulWidget {
   const SaasAdminPage({super.key});
@@ -30,8 +32,8 @@ class _SaasAdminPageState extends State<SaasAdminPage> {
     SaasTenantPage(),
     SaasServerPage(),
     SaasDeployPage(),
-    Center(child: Text('订单管理 - 开发中', style: TextStyle(fontSize: 16, color: Colors.grey))),
-    Center(child: Text('系统设置 - 开发中', style: TextStyle(fontSize: 16, color: Colors.grey))),
+    SaasOrdersPage(),
+    SaasSettingsPage(),
   ];
 
   @override
@@ -43,7 +45,7 @@ class _SaasAdminPageState extends State<SaasAdminPage> {
       selectedIndex: _selectedIndex,
       onMenuSelected: (i) => setState(() => _selectedIndex = i),
       onLogout: () {
-        ApiService.clearToken();
+        ApiService.clearSaasSession();
         Navigator.of(context).pushNamedAndRemoveUntil('/saas/login', (route) => false);
       },
       body: _pages[_selectedIndex],

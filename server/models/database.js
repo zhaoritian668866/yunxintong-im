@@ -86,6 +86,35 @@ function initDatabase() {
     )
   `);
 
+  // 订单表
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id TEXT PRIMARY KEY,
+      order_no TEXT UNIQUE NOT NULL,
+      tenant_id TEXT,
+      enterprise_id TEXT NOT NULL,
+      tenant_name TEXT DEFAULT '',
+      plan TEXT DEFAULT 'basic',
+      period TEXT DEFAULT 'monthly',
+      amount REAL DEFAULT 0,
+      status TEXT DEFAULT 'pending',
+      remark TEXT DEFAULT '',
+      paid_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // SaaS平台设置表
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS saas_settings (
+      id TEXT PRIMARY KEY,
+      key TEXT UNIQUE NOT NULL,
+      value TEXT DEFAULT '',
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   seedDefaultData();
 }
 
@@ -116,6 +145,38 @@ function seedDefaultData() {
   db.prepare(`INSERT INTO servers (id, name, ip_address, ssh_port, ssh_user, cpu_cores, memory_gb, disk_gb, cpu_usage, memory_usage, disk_usage, status, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(server1Id, 'ENT001-生产服务器', '192.168.1.100', 22, 'root', 8, 16, 200, 35.2, 62.1, 45.8, 'online', tenant1Id);
+
+  // 创建示例订单
+  const genOrderNo = () => 'ORD' + Date.now().toString().slice(-8) + Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+  db.prepare('INSERT INTO orders (id, order_no, enterprise_id, tenant_name, plan, period, amount, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(uuidv4(), genOrderNo(), 'ENT001', '云信科技有限公司', 'enterprise', 'yearly', 9590, 'completed', new Date(Date.now() - 86400000 * 30).toISOString());
+  db.prepare('INSERT INTO orders (id, order_no, enterprise_id, tenant_name, plan, period, amount, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(uuidv4(), genOrderNo(), 'ENT002', '星辰互联网科技', 'basic', 'monthly', 299, 'pending', new Date(Date.now() - 86400000 * 2).toISOString());
+  db.prepare('INSERT INTO orders (id, order_no, enterprise_id, tenant_name, plan, period, amount, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(uuidv4(), genOrderNo(), 'ENT001', '云信科技有限公司', 'enterprise', 'monthly', 999, 'paid', new Date(Date.now() - 86400000 * 5).toISOString());
+
+  // 创建默认设置
+  const defaultSettings = {
+    platform_name: '云信通',
+    platform_desc: '多租户企业即时通讯平台',
+    contact_email: 'admin@yunxintong.com',
+    contact_phone: '400-888-9999',
+    enable_registration: 'true',
+    enable_email_verify: 'false',
+    enable_two_factor: 'false',
+    max_login_attempts: '5',
+    session_timeout: '24',
+    basic_price: '299',
+    pro_price: '599',
+    ent_price: '999',
+    basic_max_users: '50',
+    pro_max_users: '200',
+    ent_max_users: '1000',
+  };
+  const insertSetting = db.prepare('INSERT OR IGNORE INTO saas_settings (id, key, value) VALUES (?,?,?)');
+  for (const [k, v] of Object.entries(defaultSettings)) {
+    insertSetting.run(uuidv4(), k, v);
+  }
 
   console.log('✅ SaaS平台数据库初始化完成');
 }

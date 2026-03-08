@@ -343,6 +343,81 @@ class ApiService {
     return _request('GET', url, token: _adminToken);
   }
 
+  // ==================== SaaS订单接口 ====================
+
+  static Future<ApiResponse> saasGetOrders({String? status, String? keyword, int page = 1}) async {
+    var url = '$saasBaseUrl/saas/orders?page=$page';
+    if (status != null) url += '&status=$status';
+    if (keyword != null && keyword.isNotEmpty) url += '&keyword=$keyword';
+    return _request('GET', url, token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasCreateOrder(Map<String, dynamic> data) async {
+    return _request('POST', '$saasBaseUrl/saas/orders', body: data, token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasUpdateOrder(dynamic id, Map<String, dynamic> data) async {
+    return _request('PUT', '$saasBaseUrl/saas/orders/$id', body: data, token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasDeleteOrder(dynamic id) async {
+    return _request('DELETE', '$saasBaseUrl/saas/orders/$id', token: _saasToken);
+  }
+
+  // ==================== SaaS设置接口 ====================
+
+  static Future<ApiResponse> saasGetSettings() async {
+    return _request('GET', '$saasBaseUrl/saas/settings', token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasUpdateSettings(Map<String, dynamic> data) async {
+    return _request('PUT', '$saasBaseUrl/saas/settings', body: data, token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasCreateAdmin(Map<String, dynamic> data) async {
+    return _request('POST', '$saasBaseUrl/saas/admins', body: data, token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasUpdateAdmin(dynamic id, Map<String, dynamic> data) async {
+    return _request('PUT', '$saasBaseUrl/saas/admins/$id', body: data, token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasDeleteAdmin(dynamic id) async {
+    return _request('DELETE', '$saasBaseUrl/saas/admins/$id', token: _saasToken);
+  }
+
+  // ==================== 企业群组管理接口 ====================
+
+  static Future<ApiResponse> adminGetGroups({String? keyword, int page = 1}) async {
+    var url = '$_entApiBase/admin/groups?page=$page';
+    if (keyword != null && keyword.isNotEmpty) url += '&keyword=$keyword';
+    return _request('GET', url, token: _adminToken);
+  }
+
+  static Future<ApiResponse> adminCreateGroup(Map<String, dynamic> data) async {
+    return _request('POST', '$_entApiBase/admin/groups', body: data, token: _adminToken);
+  }
+
+  static Future<ApiResponse> adminUpdateGroup(dynamic id, Map<String, dynamic> data) async {
+    return _request('PUT', '$_entApiBase/admin/groups/$id', body: data, token: _adminToken);
+  }
+
+  static Future<ApiResponse> adminDeleteGroup(dynamic id) async {
+    return _request('DELETE', '$_entApiBase/admin/groups/$id', token: _adminToken);
+  }
+
+  static Future<ApiResponse> adminGetGroupMembers(dynamic groupId) async {
+    return _request('GET', '$_entApiBase/admin/groups/$groupId/members', token: _adminToken);
+  }
+
+  static Future<ApiResponse> adminAddGroupMember(dynamic groupId, String userId) async {
+    return _request('POST', '$_entApiBase/admin/groups/$groupId/members', body: {'user_id': userId}, token: _adminToken);
+  }
+
+  static Future<ApiResponse> adminRemoveGroupMember(dynamic groupId, dynamic userId) async {
+    return _request('DELETE', '$_entApiBase/admin/groups/$groupId/members/$userId', token: _adminToken);
+  }
+
   // ==================== 别名方法 ====================
 
   static Future<ApiResponse> saasGetStats() => saasDashboard();

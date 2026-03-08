@@ -6,6 +6,7 @@ import 'enterprise_employee_page.dart';
 import 'enterprise_department_page.dart';
 import 'enterprise_settings_page.dart';
 import 'enterprise_chat_records_page.dart';
+import 'enterprise_groups_page.dart';
 
 class EnterpriseAdminPage extends StatefulWidget {
   const EnterpriseAdminPage({super.key});
@@ -31,7 +32,7 @@ class _EnterpriseAdminPageState extends State<EnterpriseAdminPage> {
     EnterpriseEmployeePage(),
     EnterpriseDepartmentPage(),
     EnterpriseChatRecordsPage(),
-    Center(child: Text('群组管理 - 开发中', style: TextStyle(fontSize: 16, color: Colors.grey))),
+    EnterpriseGroupsPage(),
     EnterpriseSettingsPage(),
   ];
 
@@ -44,7 +45,7 @@ class _EnterpriseAdminPageState extends State<EnterpriseAdminPage> {
       selectedIndex: _selectedIndex,
       onMenuSelected: (i) => setState(() => _selectedIndex = i),
       onLogout: () {
-        ApiService.clearToken();
+        ApiService.clearAdminSession();
         Navigator.of(context).pushNamedAndRemoveUntil('/enterprise/login', (route) => false);
       },
       body: _pages[_selectedIndex],
