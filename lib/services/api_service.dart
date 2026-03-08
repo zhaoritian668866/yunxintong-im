@@ -232,6 +232,10 @@ class ApiService {
     return _request('PUT', '$_entApiBase/auth/profile', body: data, token: _userToken);
   }
 
+  static Future<ApiResponse> changePassword(String oldPassword, String newPassword) async {
+    return _request('PUT', '$_entApiBase/auth/password', body: {'old_password': oldPassword, 'new_password': newPassword}, token: _userToken);
+  }
+
   static Future<ApiResponse> getConversations() async {
     return _request('GET', '$_entApiBase/im/conversations', token: _userToken);
   }
@@ -435,6 +439,9 @@ class ApiService {
   static Future<ApiResponse> enterpriseAddEmployee(Map<String, dynamic> data) => adminCreateEmployee(data);
   static Future<ApiResponse> enterpriseUpdateEmployee(dynamic id, Map<String, dynamic> data) => adminUpdateEmployee(id.toString(), data);
   static Future<ApiResponse> enterpriseDeleteEmployee(dynamic id) => adminDeleteEmployee(id.toString());
+  static Future<ApiResponse> enterpriseResetPassword(dynamic id, String password) async {
+    return _request('PUT', '$_entApiBase/admin/employees/$id/password', body: {'password': password}, token: _adminToken);
+  }
   static Future<ApiResponse> enterpriseAddDepartment(Map<String, dynamic> data) => adminCreateDepartment(data);
   static Future<ApiResponse> enterpriseUpdateDepartment(dynamic id, Map<String, dynamic> data) => adminUpdateDepartment(id.toString(), data);
   static Future<ApiResponse> enterpriseDeleteDepartment(dynamic id) => adminDeleteDepartment(id.toString());

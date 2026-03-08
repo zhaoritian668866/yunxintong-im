@@ -77,4 +77,22 @@ router.put('/profile', verifyToken, (req, res) => {
   }
 });
 
+// 修改密码
+router.put('/password', verifyToken, (req, res) => {
+  try {
+    const { old_password, new_password } = req.body;
+    if (!old_password || !new_password) return res.json({ code: 400, message: '请输入当前密码和新密码' });
+    if (new_password.length < 6) return res.json({ code: 400, message: '新密码长度不能少于6位' });
+    const user = db.prepare('SELECT password FROM users WHERE id=?').get(req.user.id);
+    if (!user || !bcrypt.compareSync(old_password, user.password)) {
+      return res.json({ code: 401, message: '当前密码错误' });
+    }
+    const hashedPwd = bcrypt.hashSync(new_password, 10);
+    db.prepare('UPDATE users SET password=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(hashedPwd, req.user.id);
+    res.json({ code: 200, message: '密码修改成功' });
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
+  }
+});
+
 module.exports = router;

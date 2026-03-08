@@ -74,6 +74,16 @@ router.put('/employees/:id', verifyToken, requireRole('enterprise_admin'), (req,
   } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
 });
 
+// 重置员工密码
+router.put('/employees/:id/password', verifyToken, requireRole('enterprise_admin'), (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password || password.length < 6) return res.json({ code: 400, message: '密码不能少于6位' });
+    db.prepare('UPDATE users SET password=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(bcrypt.hashSync(password, 10), req.params.id);
+    res.json({ code: 200, message: '密码重置成功' });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
 router.delete('/employees/:id', verifyToken, requireRole('enterprise_admin'), (req, res) => {
   try {
     db.prepare('DELETE FROM conversation_members WHERE user_id=?').run(req.params.id);
