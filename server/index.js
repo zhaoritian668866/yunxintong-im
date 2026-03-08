@@ -73,6 +73,38 @@ saasApp.use((req, res, next) => {
   }
 });
 
+// ==================== 企业模拟服务器 端口4001（ENT001） ====================
+// 在演示环境中，模拟企业独立服务器，提供IM和企业管理API
+const ENTERPRISE_WEB_DIR = path.join(__dirname, '../build/web_enterprise');
+const PORT_ENT = process.env.PORT_ENT || 4001;
+const entApp = express();
+entApp.use(cors(corsOptions));
+entApp.use(express.json());
+entApp.use(express.urlencoded({ extended: true }));
+
+entApp.use((req, res, next) => {
+  if (req.path.startsWith('/api')) console.log(`[ENT:4001] ${req.method} ${req.path}`);
+  next();
+});
+
+// 企业服务器API路由
+entApp.use('/api/auth', require('./routes/enterprise_auth'));
+entApp.use('/api/im', require('./routes/im'));
+entApp.use('/api/admin', require('./routes/enterprise'));
+entApp.get('/api/health', (req, res) => {
+  res.json({ code: 200, message: 'Enterprise Server OK', timestamp: new Date().toISOString() });
+});
+
+// 企业管理后台静态文件
+entApp.use(express.static(ENTERPRISE_WEB_DIR));
+entApp.use((req, res, next) => {
+  if (!req.path.startsWith('/api') && req.method === 'GET') {
+    res.sendFile(path.join(ENTERPRISE_WEB_DIR, 'index.html'));
+  } else {
+    next();
+  }
+});
+
 // ==================== 启动服务 ====================
 userApp.listen(PORT_USER, '0.0.0.0', () => {
   console.log(`\n🌐 公用前端已启动: http://0.0.0.0:${PORT_USER}`);
@@ -80,6 +112,10 @@ userApp.listen(PORT_USER, '0.0.0.0', () => {
 
 saasApp.listen(PORT_SAAS, '0.0.0.0', () => {
   console.log(`🔧 SaaS管理后台已启动: http://0.0.0.0:${PORT_SAAS}`);
+});
+
+entApp.listen(PORT_ENT, '0.0.0.0', () => {
+  console.log(`🏢 企业服务器(ENT001)已启动: http://0.0.0.0:${PORT_ENT}`);
 });
 
 console.log(`\n📋 SaaS管理员: admin / admin123`);

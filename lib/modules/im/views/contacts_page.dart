@@ -74,6 +74,22 @@ class _ContactsPageState extends State<ContactsPage> {
     }
   }
 
+  // ==================== 添加好友功能 ====================
+  void _showAddContactDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => _AddContactDialog(
+        onAdded: () {
+          Navigator.pop(ctx);
+          _loadContacts();
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('好友添加成功'), behavior: SnackBarBehavior.floating, backgroundColor: AppColors.success),
+          );
+        },
+      ),
+    );
+  }
+
   void _showContactDetail(dynamic c) {
     showModalBottomSheet(
       context: context,
@@ -117,14 +133,57 @@ class _ContactsPageState extends State<ContactsPage> {
             ]),
           ),
           const SizedBox(height: 20),
-          SizedBox(width: double.infinity, height: 48, child: ElevatedButton.icon(
-            onPressed: () { Navigator.pop(ctx); _startChat(c); },
-            icon: const Icon(Icons.chat),
-            label: const Text('发消息', style: TextStyle(fontSize: 16)),
-            style: ElevatedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-          )),
+          Row(children: [
+            Expanded(child: SizedBox(height: 48, child: ElevatedButton.icon(
+              onPressed: () { Navigator.pop(ctx); _startChat(c); },
+              icon: const Icon(Icons.chat),
+              label: const Text('发消息', style: TextStyle(fontSize: 16)),
+              style: ElevatedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+            ))),
+            const SizedBox(width: 12),
+            SizedBox(height: 48, child: OutlinedButton.icon(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _confirmRemoveContact(c);
+              },
+              icon: const Icon(Icons.person_remove, size: 18, color: AppColors.error),
+              label: const Text('删除', style: TextStyle(color: AppColors.error)),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: AppColors.error),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            )),
+          ]),
           const SizedBox(height: 12),
         ]),
+      ),
+    );
+  }
+
+  void _confirmRemoveContact(dynamic c) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('删除联系人'),
+        content: Text('确定要删除联系人"${c['nickname'] ?? c['username']}"吗？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final res = await ApiService.removeContact(c['id'].toString());
+              if (res.isSuccess) {
+                _loadContacts();
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已删除联系人'), behavior: SnackBarBehavior.floating));
+              } else {
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('删除失败: ${res.message}'), behavior: SnackBarBehavior.floating));
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            child: const Text('删除', style: TextStyle(color: Colors.white)),
+          ),
+        ],
       ),
     );
   }
@@ -249,6 +308,11 @@ class _ContactsPageState extends State<ContactsPage> {
               });
             },
           ),
+          IconButton(
+            icon: const Icon(Icons.person_add),
+            tooltip: '添加好友',
+            onPressed: _showAddContactDialog,
+          ),
         ],
       ),
       body: _loading
@@ -256,9 +320,12 @@ class _ContactsPageState extends State<ContactsPage> {
         : RefreshIndicator(
             onRefresh: _loadContacts,
             child: ListView(children: [
+              // 快捷入口
               Container(
                 color: AppColors.cardBg,
                 child: Column(children: [
+                  _buildQuickEntry(Icons.person_add, '添加好友', AppColors.info, _showAddContactDialog),
+                  const Divider(height: 0.5, indent: 56),
                   _buildQuickEntry(Icons.group, '群组 (${_groups.length})', AppColors.primary, _showGroupsList),
                   const Divider(height: 0.5, indent: 56),
                   _buildQuickEntry(Icons.business, '部门 (${_departments.length})', AppColors.success, _showDepartmentsList),
@@ -269,27 +336,43 @@ class _ContactsPageState extends State<ContactsPage> {
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: Text('联系人 (${_filteredContacts.length})', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.textSecondary)),
               ),
-              ..._filteredContacts.map((c) {
-                final name = c['nickname'] ?? c['username'] ?? '';
-                final position = c['position'] ?? '';
-                final dept = c['department_name'] ?? '';
-                final isOnline = c['online_status'] == 'online';
-                return Container(
-                  color: AppColors.cardBg,
-                  child: ListTile(
-                    leading: Stack(children: [
-                      CircleAvatar(radius: 20, backgroundColor: AppColors.primary.withOpacity(0.15),
-                        child: Text(name.isNotEmpty ? name[0] : '?', style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600, fontSize: 16))),
-                      Positioned(right: 0, bottom: 0, child: Container(width: 10, height: 10,
-                        decoration: BoxDecoration(shape: BoxShape.circle, color: isOnline ? AppColors.online : AppColors.offline, border: Border.all(color: AppColors.cardBg, width: 1.5)))),
-                    ]),
-                    title: Text(name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
-                    subtitle: Text('${dept.isNotEmpty ? "$dept | " : ""}$position', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-                    trailing: IconButton(icon: const Icon(Icons.chat_bubble_outline, size: 20, color: AppColors.primary), onPressed: () => _startChat(c)),
-                    onTap: () => _showContactDetail(c),
-                  ),
-                );
-              }),
+              if (_filteredContacts.isEmpty)
+                Container(
+                  padding: const EdgeInsets.all(40),
+                  child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.people_outline, size: 48, color: Colors.grey.shade300),
+                    const SizedBox(height: 12),
+                    const Text('暂无联系人', style: TextStyle(color: AppColors.textSecondary)),
+                    const SizedBox(height: 8),
+                    ElevatedButton.icon(
+                      onPressed: _showAddContactDialog,
+                      icon: const Icon(Icons.person_add, size: 18),
+                      label: const Text('添加好友'),
+                    ),
+                  ])),
+                )
+              else
+                ..._filteredContacts.map((c) {
+                  final name = c['nickname'] ?? c['username'] ?? '';
+                  final position = c['position'] ?? '';
+                  final dept = c['department_name'] ?? '';
+                  final isOnline = c['online_status'] == 'online';
+                  return Container(
+                    color: AppColors.cardBg,
+                    child: ListTile(
+                      leading: Stack(children: [
+                        CircleAvatar(radius: 20, backgroundColor: AppColors.primary.withOpacity(0.15),
+                          child: Text(name.isNotEmpty ? name[0] : '?', style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600, fontSize: 16))),
+                        Positioned(right: 0, bottom: 0, child: Container(width: 10, height: 10,
+                          decoration: BoxDecoration(shape: BoxShape.circle, color: isOnline ? AppColors.online : AppColors.offline, border: Border.all(color: AppColors.cardBg, width: 1.5)))),
+                      ]),
+                      title: Text(name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
+                      subtitle: Text('${dept.isNotEmpty ? "$dept | " : ""}$position', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                      trailing: IconButton(icon: const Icon(Icons.chat_bubble_outline, size: 20, color: AppColors.primary), onPressed: () => _startChat(c)),
+                      onTap: () => _showContactDetail(c),
+                    ),
+                  );
+                }),
             ]),
           ),
     );
@@ -302,6 +385,174 @@ class _ContactsPageState extends State<ContactsPage> {
       title: Text(title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
       trailing: const Icon(Icons.chevron_right, color: AppColors.textSecondary, size: 20),
       onTap: onTap,
+    );
+  }
+}
+
+// ==================== 添加好友弹窗 ====================
+class _AddContactDialog extends StatefulWidget {
+  final VoidCallback onAdded;
+  const _AddContactDialog({required this.onAdded});
+  @override
+  State<_AddContactDialog> createState() => _AddContactDialogState();
+}
+
+class _AddContactDialogState extends State<_AddContactDialog> {
+  final _searchController = TextEditingController();
+  List<dynamic> _searchResults = [];
+  bool _searching = false;
+  String? _error;
+  bool _hasSearched = false;
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _search() async {
+    final keyword = _searchController.text.trim();
+    if (keyword.isEmpty) return;
+    setState(() { _searching = true; _error = null; _hasSearched = true; });
+    final res = await ApiService.searchUsers(keyword);
+    if (!mounted) return;
+    if (res.isSuccess) {
+      final data = res.data;
+      List results = [];
+      if (data is List) {
+        results = data;
+      } else if (data is Map) {
+        results = data['list'] ?? data['users'] ?? [];
+      }
+      setState(() { _searchResults = results; _searching = false; });
+    } else {
+      setState(() { _error = res.message; _searching = false; });
+    }
+  }
+
+  Future<void> _addContact(dynamic user) async {
+    final res = await ApiService.addContact(user['id'].toString());
+    if (!mounted) return;
+    if (res.isSuccess) {
+      widget.onAdded();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('添加失败: ${res.message}'), behavior: SnackBarBehavior.floating),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: SizedBox(
+        width: 420, height: 520,
+        child: Column(children: [
+          // 标题栏
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 8, 0),
+            child: Row(children: [
+              const Icon(Icons.person_add, color: AppColors.primary),
+              const SizedBox(width: 8),
+              const Text('添加好友', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+              const Spacer(),
+              IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
+            ]),
+          ),
+          const Divider(),
+          // 搜索框
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            child: Row(children: [
+              Expanded(child: TextField(
+                controller: _searchController,
+                autofocus: true,
+                decoration: InputDecoration(
+                  hintText: '输入用户名、手机号或姓名搜索',
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  isDense: true,
+                ),
+                onSubmitted: (_) => _search(),
+              )),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: _searching ? null : _search,
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                child: _searching
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('搜索'),
+              ),
+            ]),
+          ),
+          // 搜索结果
+          Expanded(
+            child: _searching
+              ? const Center(child: CircularProgressIndicator())
+              : _error != null
+                ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.error_outline, size: 40, color: AppColors.error),
+                    const SizedBox(height: 8),
+                    Text(_error!, style: const TextStyle(color: AppColors.error)),
+                  ]))
+                : !_hasSearched
+                  ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.person_search, size: 56, color: Colors.grey.shade300),
+                      const SizedBox(height: 12),
+                      Text('输入关键词搜索企业内的同事', style: TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+                      const SizedBox(height: 4),
+                      Text('支持用户名、手机号、姓名搜索', style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                    ]))
+                  : _searchResults.isEmpty
+                    ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.search_off, size: 48, color: Colors.grey.shade300),
+                        const SizedBox(height: 12),
+                        const Text('未找到匹配的用户', style: TextStyle(color: AppColors.textSecondary)),
+                        const SizedBox(height: 4),
+                        const Text('请尝试其他关键词', style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                      ]))
+                    : ListView.separated(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        itemCount: _searchResults.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1, indent: 56),
+                        itemBuilder: (_, i) {
+                          final user = _searchResults[i];
+                          final name = user['nickname'] ?? user['username'] ?? '';
+                          final dept = user['department_name'] ?? '';
+                          final isContact = user['is_contact'] == true || user['is_contact'] == 1;
+                          return ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: AppColors.primary.withOpacity(0.15),
+                              child: Text(name.isNotEmpty ? name[0] : '?', style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600)),
+                            ),
+                            title: Text(name, style: const TextStyle(fontWeight: FontWeight.w500)),
+                            subtitle: Text(dept.isNotEmpty ? dept : (user['phone'] ?? ''), style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                            trailing: isContact
+                              ? Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(16)),
+                                  child: const Text('已添加', style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                                )
+                              : ElevatedButton(
+                                  onPressed: () => _addContact(user),
+                                  style: ElevatedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                    minimumSize: Size.zero,
+                                  ),
+                                  child: const Text('添加', style: TextStyle(fontSize: 12)),
+                                ),
+                          );
+                        },
+                      ),
+          ),
+        ]),
+      ),
     );
   }
 }

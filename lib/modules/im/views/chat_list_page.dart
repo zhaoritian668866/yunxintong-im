@@ -1,6 +1,10 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import '../../../config/theme.dart';
 import '../../../services/api_service.dart';
+import '../../../services/notification_helper.dart' as notif;
 import 'chat_detail_page.dart';
 
 class ChatListPage extends StatefulWidget {
@@ -9,15 +13,37 @@ class ChatListPage extends StatefulWidget {
   State<ChatListPage> createState() => _ChatListPageState();
 }
 
-class _ChatListPageState extends State<ChatListPage> {
+class _ChatListPageState extends State<ChatListPage> with WidgetsBindingObserver {
   List<dynamic> _conversations = [];
   bool _loading = true;
   String? _error;
+  Timer? _refreshTimer;
+  int _totalUnread = 0;
+  int _prevTotalUnread = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadConversations();
+    // 每3秒自动刷新会话列表
+    _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (mounted) _silentRefresh();
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      _silentRefresh();
+    }
   }
 
   Future<void> _loadConversations() async {
@@ -25,10 +51,60 @@ class _ChatListPageState extends State<ChatListPage> {
     final res = await ApiService.getConversations();
     if (!mounted) return;
     if (res.isSuccess && res.data is List) {
-      setState(() { _conversations = res.data; _loading = false; });
+      _updateConversations(res.data);
+      setState(() { _loading = false; });
     } else {
       setState(() { _error = res.message; _loading = false; });
     }
+  }
+
+  Future<void> _silentRefresh() async {
+    final res = await ApiService.getConversations();
+    if (!mounted) return;
+    if (res.isSuccess && res.data is List) {
+      _updateConversations(res.data);
+    }
+  }
+
+  void _updateConversations(List<dynamic> data) {
+    _prevTotalUnread = _totalUnread;
+    int newTotal = 0;
+    for (var conv in data) {
+      newTotal += (conv['unread_count'] ?? 0) as int;
+    }
+    _totalUnread = newTotal;
+
+    // 新消息到达时播放提示音和显示浏览器通知
+    if (_totalUnread > _prevTotalUnread && _prevTotalUnread >= 0) {
+      _playNotificationSound();
+      // 找到有新消息的会话，显示浏览器通知
+      if (kIsWeb) {
+        for (var conv in data) {
+          final unread = conv['unread_count'] ?? 0;
+          if (unread > 0) {
+            final name = conv['name'] ?? '新消息';
+            final lastMsg = conv['last_message'] ?? '您有新消息';
+            _showBrowserNotification(name, lastMsg);
+            break;
+          }
+        }
+      }
+    }
+
+    setState(() { _conversations = data; });
+  }
+
+  void _playNotificationSound() {
+    // 播放Web端提示音
+    try {
+      notif.webPlayNotificationSound();
+    } catch (_) {}
+  }
+
+  void _showBrowserNotification(String title, String body) {
+    try {
+      notif.webShowBrowserNotification(title, body);
+    } catch (_) {}
   }
 
   String _formatTime(String? timeStr) {
@@ -80,7 +156,7 @@ class _ChatListPageState extends State<ChatListPage> {
                 Navigator.pop(ctx);
                 final res = await ApiService.pinConversation(conv['id'], !isPinned);
                 if (res.isSuccess) _loadConversations();
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res.message), behavior: SnackBarBehavior.floating));
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res.message), behavior: SnackBarBehavior.floating, duration: const Duration(seconds: 1)));
               },
             ),
             ListTile(
@@ -90,7 +166,24 @@ class _ChatListPageState extends State<ChatListPage> {
                 Navigator.pop(ctx);
                 final res = await ApiService.muteConversation(conv['id'], !isMuted);
                 if (res.isSuccess) _loadConversations();
-                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res.message), behavior: SnackBarBehavior.floating));
+                if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res.message), behavior: SnackBarBehavior.floating, duration: const Duration(seconds: 1)));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.mark_chat_read, color: AppColors.success),
+              title: const Text('标记已读'),
+              onTap: () async {
+                Navigator.pop(ctx);
+                // 进入会话会自动标记已读
+                _loadConversations();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: AppColors.error),
+              title: const Text('删除会话', style: TextStyle(color: AppColors.error)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _confirmDeleteConversation(conv);
               },
             ),
           ]),
@@ -99,13 +192,48 @@ class _ChatListPageState extends State<ChatListPage> {
     );
   }
 
+  void _confirmDeleteConversation(dynamic conv) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('删除会话'),
+        content: Text('确定要删除与"${conv['name'] ?? '未命名'}"的会话吗？\n删除后聊天记录将不可恢复。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              // TODO: 调用删除会话API
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('会话已删除'), behavior: SnackBarBehavior.floating, duration: Duration(seconds: 1)));
+              _loadConversations();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            child: const Text('删除', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('消息'),
+        title: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Text('消息'),
+          if (_totalUnread > 0) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(color: Colors.white.withOpacity(0.25), borderRadius: BorderRadius.circular(10)),
+              child: Text('$_totalUnread', style: const TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.w600)),
+            ),
+          ],
+        ]),
         automaticallyImplyLeading: false,
         actions: [
+          IconButton(icon: const Icon(Icons.search), tooltip: '搜索', onPressed: _showSearchDialog),
           IconButton(icon: const Icon(Icons.add_comment_outlined), tooltip: '发起聊天', onPressed: _showNewChatDialog),
         ],
       ),
@@ -124,6 +252,8 @@ class _ChatListPageState extends State<ChatListPage> {
                 Icon(Icons.chat_bubble_outline, size: 64, color: AppColors.textSecondary.withOpacity(0.5)),
                 const SizedBox(height: 16),
                 const Text('暂无会话', style: TextStyle(color: AppColors.textSecondary, fontSize: 16)),
+                const SizedBox(height: 8),
+                const Text('点击右上角"+"发起新的聊天', style: TextStyle(color: AppColors.textSecondary, fontSize: 13)),
                 const SizedBox(height: 16),
                 ElevatedButton.icon(onPressed: _showNewChatDialog, icon: const Icon(Icons.add), label: const Text('发起聊天')),
               ]))
@@ -138,6 +268,71 @@ class _ChatListPageState extends State<ChatListPage> {
     );
   }
 
+  void _showSearchDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        String query = '';
+        return StatefulBuilder(builder: (ctx, setDialogState) {
+          final filtered = _conversations.where((c) {
+            final name = (c['name'] ?? '').toString().toLowerCase();
+            final lastMsg = (c['last_message'] ?? '').toString().toLowerCase();
+            return name.contains(query.toLowerCase()) || lastMsg.contains(query.toLowerCase());
+          }).toList();
+          return Dialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            child: SizedBox(
+              width: 400, height: 480,
+              child: Column(children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 8, 0),
+                  child: Row(children: [
+                    Expanded(child: TextField(
+                      autofocus: true,
+                      decoration: InputDecoration(
+                        hintText: '搜索会话...',
+                        prefixIcon: const Icon(Icons.search),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      onChanged: (v) => setDialogState(() { query = v; }),
+                    )),
+                    IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
+                  ]),
+                ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: filtered.isEmpty
+                    ? const Center(child: Text('无匹配结果', style: TextStyle(color: AppColors.textSecondary)))
+                    : ListView.builder(
+                        itemCount: filtered.length,
+                        itemBuilder: (_, i) {
+                          final c = filtered[i];
+                          return ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: c['type'] == 'group' ? AppColors.info.withOpacity(0.15) : AppColors.primary.withOpacity(0.15),
+                              child: Text((c['name'] ?? '?')[0], style: TextStyle(color: c['type'] == 'group' ? AppColors.info : AppColors.primary, fontWeight: FontWeight.w600)),
+                            ),
+                            title: Text(c['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w500)),
+                            subtitle: Text(c['last_message'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+                            onTap: () {
+                              Navigator.pop(ctx);
+                              Navigator.push(context, MaterialPageRoute(
+                                builder: (_) => ChatDetailPage(conversationId: c['id'], title: c['name'] ?? ''),
+                              )).then((_) => _loadConversations());
+                            },
+                          );
+                        },
+                      ),
+                ),
+              ]),
+            ),
+          );
+        });
+      },
+    );
+  }
+
   Widget _buildConversationTile(dynamic conv) {
     final name = conv['name'] ?? '未命名';
     final lastMsg = conv['last_message'] ?? '';
@@ -148,66 +343,94 @@ class _ChatListPageState extends State<ChatListPage> {
     final isGroup = conv['type'] == 'group';
     final isOnline = conv['peer_online'] == 'online';
 
+    // 消息预览：群聊显示发送者名字
     String displayMsg = lastMsg;
-    if (isGroup && conv['last_sender_name'] != null && conv['last_sender_name'].toString().isNotEmpty) {
+    if (lastMsg.isEmpty) {
+      displayMsg = '[暂无消息]';
+    } else if (isGroup && conv['last_sender_name'] != null && conv['last_sender_name'].toString().isNotEmpty) {
       displayMsg = '${conv['last_sender_name']}: $lastMsg';
     }
 
-    return InkWell(
-      onTap: () {
-        Navigator.push(context, MaterialPageRoute(
-          builder: (_) => ChatDetailPage(conversationId: conv['id'], title: name),
-        )).then((_) => _loadConversations());
+    return Dismissible(
+      key: Key(conv['id'].toString()),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        color: AppColors.error,
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        child: const Icon(Icons.delete, color: Colors.white),
+      ),
+      confirmDismiss: (_) async {
+        _showConversationActions(conv);
+        return false;
       },
-      onLongPress: () => _showConversationActions(conv),
-      child: Container(
-        color: isPinned ? AppColors.primary.withOpacity(0.04) : null,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Row(children: [
-          Stack(children: [
-            CircleAvatar(
-              radius: 24,
-              backgroundColor: isGroup ? AppColors.info.withOpacity(0.15) : AppColors.primary.withOpacity(0.15),
-              child: Text(
-                name.isNotEmpty ? name[0] : '?',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: isGroup ? AppColors.info : AppColors.primary),
+      child: InkWell(
+        onTap: () {
+          Navigator.push(context, MaterialPageRoute(
+            builder: (_) => ChatDetailPage(conversationId: conv['id'], title: name),
+          )).then((_) => _loadConversations());
+        },
+        onLongPress: () => _showConversationActions(conv),
+        child: Container(
+          color: isPinned ? AppColors.primary.withOpacity(0.04) : null,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(children: [
+            Stack(children: [
+              CircleAvatar(
+                radius: 24,
+                backgroundColor: isGroup ? AppColors.info.withOpacity(0.15) : AppColors.primary.withOpacity(0.15),
+                child: isGroup
+                  ? const Icon(Icons.group, color: AppColors.info, size: 22)
+                  : Text(name.isNotEmpty ? name[0] : '?', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: AppColors.primary)),
               ),
-            ),
-            if (!isGroup) Positioned(
-              right: 0, bottom: 0,
-              child: Container(
-                width: 12, height: 12,
-                decoration: BoxDecoration(
-                  color: isOnline ? AppColors.online : AppColors.offline,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 2),
+              if (!isGroup) Positioned(
+                right: 0, bottom: 0,
+                child: Container(
+                  width: 12, height: 12,
+                  decoration: BoxDecoration(
+                    color: isOnline ? AppColors.online : AppColors.offline,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
                 ),
               ),
-            ),
+              if (isPinned) Positioned(
+                left: 0, top: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(1),
+                  decoration: BoxDecoration(color: AppColors.primary, borderRadius: BorderRadius.circular(4)),
+                  child: const Icon(Icons.push_pin, size: 10, color: Colors.white),
+                ),
+              ),
+            ]),
+            const SizedBox(width: 12),
+            Expanded(child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Expanded(child: Row(children: [
+                    Flexible(child: Text(name, style: TextStyle(fontSize: 16, fontWeight: unread > 0 ? FontWeight.w700 : FontWeight.w500, color: AppColors.textPrimary), overflow: TextOverflow.ellipsis)),
+                    if (isMuted) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.notifications_off, size: 14, color: AppColors.textSecondary)),
+                  ])),
+                  Text(lastTime, style: TextStyle(fontSize: 12, color: unread > 0 ? AppColors.primary : AppColors.textSecondary)),
+                ]),
+                const SizedBox(height: 4),
+                Row(children: [
+                  Expanded(child: Text(
+                    displayMsg,
+                    style: TextStyle(fontSize: 13, color: unread > 0 ? AppColors.textPrimary : AppColors.textSecondary, fontWeight: unread > 0 ? FontWeight.w500 : FontWeight.normal),
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
+                  )),
+                  if (unread > 0) Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(color: isMuted ? AppColors.textSecondary : AppColors.unreadBadge, borderRadius: BorderRadius.circular(10)),
+                    child: Text(unread > 99 ? '99+' : '$unread', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
+                  ),
+                ]),
+              ],
+            )),
           ]),
-          const SizedBox(width: 12),
-          Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(children: [
-                Expanded(child: Row(children: [
-                  Flexible(child: Text(name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: AppColors.textPrimary), overflow: TextOverflow.ellipsis)),
-                  if (isMuted) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.notifications_off, size: 14, color: AppColors.textSecondary)),
-                ])),
-                Text(lastTime, style: TextStyle(fontSize: 12, color: unread > 0 ? AppColors.primary : AppColors.textSecondary)),
-              ]),
-              const SizedBox(height: 4),
-              Row(children: [
-                Expanded(child: Text(displayMsg, style: const TextStyle(fontSize: 13, color: AppColors.textSecondary), maxLines: 1, overflow: TextOverflow.ellipsis)),
-                if (unread > 0) Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(color: isMuted ? AppColors.textSecondary : AppColors.unreadBadge, borderRadius: BorderRadius.circular(10)),
-                  child: Text(unread > 99 ? '99+' : '$unread', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
-                ),
-              ]),
-            ],
-          )),
-        ]),
+        ),
       ),
     );
   }
@@ -223,8 +446,10 @@ class _NewChatDialog extends StatefulWidget {
 class _NewChatDialogState extends State<_NewChatDialog> with SingleTickerProviderStateMixin {
   late TabController _tabController;
   List<dynamic> _contacts = [];
+  List<dynamic> _filteredContacts = [];
   bool _loading = true;
   final _groupNameController = TextEditingController();
+  final _searchController = TextEditingController();
   final Set<String> _selectedMembers = {};
 
   @override
@@ -238,6 +463,7 @@ class _NewChatDialogState extends State<_NewChatDialog> with SingleTickerProvide
   void dispose() {
     _tabController.dispose();
     _groupNameController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -245,10 +471,23 @@ class _NewChatDialogState extends State<_NewChatDialog> with SingleTickerProvide
     final res = await ApiService.getContacts();
     if (!mounted) return;
     if (res.isSuccess && res.data is Map) {
-      setState(() { _contacts = res.data['contacts'] ?? []; _loading = false; });
+      setState(() { _contacts = res.data['contacts'] ?? []; _filteredContacts = List.from(_contacts); _loading = false; });
     } else {
       setState(() { _loading = false; });
     }
+  }
+
+  void _filterContacts(String query) {
+    setState(() {
+      if (query.isEmpty) {
+        _filteredContacts = List.from(_contacts);
+      } else {
+        _filteredContacts = _contacts.where((c) {
+          final name = (c['nickname'] ?? c['username'] ?? '').toString().toLowerCase();
+          return name.contains(query.toLowerCase());
+        }).toList();
+      }
+    });
   }
 
   Future<void> _startPrivateChat(dynamic contact) async {
@@ -278,7 +517,7 @@ class _NewChatDialogState extends State<_NewChatDialog> with SingleTickerProvide
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: SizedBox(
-        width: 400, height: 520,
+        width: 420, height: 560,
         child: Column(children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 16, 8, 0),
@@ -293,33 +532,75 @@ class _NewChatDialogState extends State<_NewChatDialog> with SingleTickerProvide
           Expanded(child: _loading
             ? const Center(child: CircularProgressIndicator())
             : TabBarView(controller: _tabController, children: [
-                _contacts.isEmpty
-                  ? const Center(child: Text('暂无联系人', style: TextStyle(color: AppColors.textSecondary)))
-                  : ListView.builder(
-                      itemCount: _contacts.length,
-                      itemBuilder: (_, i) {
-                        final c = _contacts[i];
-                        return ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: AppColors.primary.withOpacity(0.15),
-                            child: Text((c['nickname'] ?? '?')[0], style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600)),
-                          ),
-                          title: Text(c['nickname'] ?? c['username'] ?? ''),
-                          subtitle: Text(c['department_name'] ?? c['position'] ?? '', style: const TextStyle(fontSize: 12)),
-                          trailing: const Icon(Icons.chat_bubble_outline, size: 20, color: AppColors.primary),
-                          onTap: () => _startPrivateChat(c),
-                        );
-                      },
+                // 私聊Tab - 带搜索
+                Column(children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                    child: TextField(
+                      controller: _searchController,
+                      decoration: InputDecoration(
+                        hintText: '搜索联系人...',
+                        prefixIcon: const Icon(Icons.search, size: 20),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        isDense: true,
+                      ),
+                      onChanged: _filterContacts,
                     ),
+                  ),
+                  Expanded(
+                    child: _filteredContacts.isEmpty
+                      ? const Center(child: Text('暂无联系人', style: TextStyle(color: AppColors.textSecondary)))
+                      : ListView.builder(
+                          itemCount: _filteredContacts.length,
+                          itemBuilder: (_, i) {
+                            final c = _filteredContacts[i];
+                            final isOnline = c['online_status'] == 'online';
+                            return ListTile(
+                              leading: Stack(children: [
+                                CircleAvatar(
+                                  backgroundColor: AppColors.primary.withOpacity(0.15),
+                                  child: Text((c['nickname'] ?? '?')[0], style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w600)),
+                                ),
+                                Positioned(right: 0, bottom: 0, child: Container(width: 10, height: 10,
+                                  decoration: BoxDecoration(shape: BoxShape.circle, color: isOnline ? AppColors.online : AppColors.offline, border: Border.all(color: Colors.white, width: 1.5)))),
+                              ]),
+                              title: Text(c['nickname'] ?? c['username'] ?? '', style: const TextStyle(fontWeight: FontWeight.w500)),
+                              subtitle: Text('${c['department_name'] ?? ''} ${c['position'] ?? ''}'.trim(), style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                              trailing: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(16)),
+                                child: const Text('发消息', style: TextStyle(color: AppColors.primary, fontSize: 12, fontWeight: FontWeight.w500)),
+                              ),
+                              onTap: () => _startPrivateChat(c),
+                            );
+                          },
+                        ),
+                  ),
+                ]),
+                // 创建群聊Tab
                 Padding(
                   padding: const EdgeInsets.all(16),
                   child: Column(children: [
-                    TextField(controller: _groupNameController, decoration: const InputDecoration(labelText: '群名称', hintText: '请输入群名称', prefixIcon: Icon(Icons.group))),
+                    TextField(
+                      controller: _groupNameController,
+                      decoration: InputDecoration(
+                        labelText: '群名称',
+                        hintText: '请输入群名称',
+                        prefixIcon: const Icon(Icons.group),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                    ),
                     const SizedBox(height: 12),
                     Row(children: [
                       Text('选择成员 (${_selectedMembers.length})', style: const TextStyle(fontWeight: FontWeight.w500)),
                       const Spacer(),
-                      ElevatedButton(onPressed: _createGroup, child: const Text('创建群聊')),
+                      ElevatedButton.icon(
+                        onPressed: _selectedMembers.isEmpty ? null : _createGroup,
+                        icon: const Icon(Icons.group_add, size: 18),
+                        label: const Text('创建群聊'),
+                        style: ElevatedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                      ),
                     ]),
                     const SizedBox(height: 8),
                     Expanded(child: ListView.builder(
@@ -331,10 +612,12 @@ class _NewChatDialogState extends State<_NewChatDialog> with SingleTickerProvide
                           value: selected,
                           onChanged: (v) { setState(() { if (v == true) _selectedMembers.add(c['id']); else _selectedMembers.remove(c['id']); }); },
                           title: Text(c['nickname'] ?? c['username'] ?? ''),
-                          subtitle: Text(c['department_name'] ?? '', style: const TextStyle(fontSize: 12)),
+                          subtitle: Text('${c['department_name'] ?? ''} ${c['position'] ?? ''}'.trim(), style: const TextStyle(fontSize: 12)),
                           secondary: CircleAvatar(radius: 18, backgroundColor: AppColors.primary.withOpacity(0.15),
                             child: Text((c['nickname'] ?? '?')[0], style: const TextStyle(color: AppColors.primary, fontSize: 14))),
                           controlAffinity: ListTileControlAffinity.trailing,
+                          activeColor: AppColors.primary,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                         );
                       },
                     )),

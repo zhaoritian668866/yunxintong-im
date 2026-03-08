@@ -91,15 +91,16 @@ router.post('/messages', verifyToken, (req, res) => {
     if (!member) return res.json({ code: 403, message: '您不是该会话的成员' });
 
     const msgId = uuidv4();
-    db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, type, content, file_url, file_name, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(msgId, conversation_id, req.user.id, type || 'text', content, file_url || null, file_name || null, reply_to || null);
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO messages (id, conversation_id, sender_id, type, content, file_url, file_name, reply_to, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(msgId, conversation_id, req.user.id, type || 'text', content, file_url || null, file_name || null, reply_to || null, now);
 
     // 更新其他成员未读数
     db.prepare('UPDATE conversation_members SET unread_count = unread_count + 1 WHERE conversation_id = ? AND user_id != ?')
       .run(conversation_id, req.user.id);
 
     // 更新会话时间
-    db.prepare('UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(conversation_id);
+    db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(now, conversation_id);
 
     const msg = db.prepare(`
       SELECT m.*, u.nickname as sender_name, u.avatar as sender_avatar
@@ -234,6 +235,59 @@ router.put('/conversations/:id/mute', verifyToken, (req, res) => {
     db.prepare('UPDATE conversation_members SET is_muted = ? WHERE conversation_id = ? AND user_id = ?')
       .run(is_muted ? 1 : 0, req.params.id, req.user.id);
     res.json({ code: 200, message: is_muted ? '已开启免打扰' : '已关闭免打扰' });
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
+  }
+});
+
+// ==================== 搜索用户（添加好友） ====================
+
+router.get('/contacts/search', verifyToken, (req, res) => {
+  try {
+    const { keyword } = req.query;
+    if (!keyword || keyword.trim().length === 0) {
+      return res.json({ code: 400, message: '请输入搜索关键词' });
+    }
+    const tid = req.user.tenant_id;
+    const searchTerm = `%${keyword.trim()}%`;
+    const users = db.prepare(`
+      SELECT u.id, u.username, u.nickname, u.avatar, u.phone, u.email, u.position, u.online_status, u.department_id, d.name as department_name
+      FROM users u LEFT JOIN departments d ON u.department_id = d.id
+      WHERE u.tenant_id = ? AND u.status = 'active' AND u.id != ?
+      AND (u.username LIKE ? OR u.nickname LIKE ? OR u.phone LIKE ?)
+      ORDER BY u.nickname
+      LIMIT 50
+    `).all(tid, req.user.id, searchTerm, searchTerm, searchTerm);
+
+    // 标记哪些已经是联系人（同企业内所有人都算联系人）
+    const result = users.map(u => ({ ...u, is_contact: true }));
+    res.json({ code: 200, data: result });
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
+  }
+});
+
+// ==================== 添加联系人 ====================
+
+router.post('/contacts', verifyToken, (req, res) => {
+  try {
+    const { contact_id } = req.body;
+    if (!contact_id) return res.json({ code: 400, message: '请指定联系人ID' });
+    // 企业内用户都可以直接添加
+    const user = db.prepare('SELECT id, nickname FROM users WHERE id = ? AND tenant_id = ?').get(contact_id, req.user.tenant_id);
+    if (!user) return res.json({ code: 404, message: '用户不存在' });
+    res.json({ code: 200, message: '添加成功', data: { id: user.id, nickname: user.nickname } });
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
+  }
+});
+
+// ==================== 删除联系人 ====================
+
+router.delete('/contacts/:id', verifyToken, (req, res) => {
+  try {
+    // 企业内通讯录不支持真正删除，返回成功即可
+    res.json({ code: 200, message: '已删除联系人' });
   } catch (err) {
     res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
   }

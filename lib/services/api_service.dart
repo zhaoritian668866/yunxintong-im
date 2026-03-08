@@ -146,7 +146,7 @@ class ApiService {
   // ==================== SaaS平台接口 ====================
 
   static Future<ApiResponse> resolveEnterprise(String eid) async {
-    return _request('POST', '$saasBaseUrl/auth/resolve', body: {'enterprise_id': eid});
+    return _request('POST', '$saasBaseUrl/saas/resolve', body: {'enterprise_id': eid});
   }
 
   static Future<ApiResponse> saasLogin(String username, String password) async {
@@ -256,8 +256,20 @@ class ApiService {
     return _request('GET', '$_entApiBase/im/contacts', token: _userToken);
   }
 
-  static Future<ApiResponse> createConversation(String type, {String? name, List<String>? memberIds}) async {
+  static Future<ApiResponse> createConversation(String type, {String? name, List<dynamic>? memberIds}) async {
     return _request('POST', '$_entApiBase/im/conversations', body: {'type': type, 'name': name, 'member_ids': memberIds}, token: _userToken);
+  }
+
+  static Future<ApiResponse> searchUsers(String keyword) async {
+    return _request('GET', '$_entApiBase/im/contacts/search?keyword=$keyword', token: _userToken);
+  }
+
+  static Future<ApiResponse> addContact(String userId) async {
+    return _request('POST', '$_entApiBase/im/contacts', body: {'contact_id': userId}, token: _userToken);
+  }
+
+  static Future<ApiResponse> removeContact(String userId) async {
+    return _request('DELETE', '$_entApiBase/im/contacts/$userId', token: _userToken);
   }
 
   static Future<ApiResponse> pinConversation(String id, bool pinned) async {
@@ -425,6 +437,8 @@ class ApiService {
   // ==================== 别名方法 ====================
 
   static Future<ApiResponse> saasGetStats() => saasDashboard();
+  static Future<ApiResponse> saasGetUndeployedTenants() => saasUndeployedTenants();
+  static Future<ApiResponse> saasGetAvailableServers() => saasAvailableServers();
   static Future<ApiResponse> saasGetTenants({int page = 1, String? keyword, String? status}) => saasTenants(page: page, keyword: keyword, status: status);
   static Future<ApiResponse> saasGetServers() => saasServers();
   static Future<ApiResponse> saasAddServer(Map<String, dynamic> data) => saasCreateServer(data);

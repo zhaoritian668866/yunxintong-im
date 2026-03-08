@@ -18,19 +18,84 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="云信通IM - 企业即时通讯">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="yunxintong_im">
+  <meta name="apple-mobile-web-app-title" content="云信通IM">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>yunxintong_im</title>
+  <title>云信通IM</title>
   <link rel="manifest" href="manifest.json">
+
+  <script>
+    // 新消息通知音频 - 使用Web Audio API生成提示音
+    window._notificationAudioCtx = null;
+
+    window.playNotificationSound = function() {
+      try {
+        if (!window._notificationAudioCtx) {
+          window._notificationAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        var ctx = window._notificationAudioCtx;
+        // 创建两个短促的提示音
+        var osc1 = ctx.createOscillator();
+        var gain1 = ctx.createGain();
+        osc1.connect(gain1);
+        gain1.connect(ctx.destination);
+        osc1.type = 'sine';
+        osc1.frequency.setValueAtTime(880, ctx.currentTime); // A5
+        gain1.gain.setValueAtTime(0.3, ctx.currentTime);
+        gain1.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
+        osc1.start(ctx.currentTime);
+        osc1.stop(ctx.currentTime + 0.15);
+
+        var osc2 = ctx.createOscillator();
+        var gain2 = ctx.createGain();
+        osc2.connect(gain2);
+        gain2.connect(ctx.destination);
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(1174.66, ctx.currentTime + 0.15); // D6
+        gain2.gain.setValueAtTime(0, ctx.currentTime);
+        gain2.gain.setValueAtTime(0.3, ctx.currentTime + 0.15);
+        gain2.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+        osc2.start(ctx.currentTime + 0.15);
+        osc2.stop(ctx.currentTime + 0.35);
+      } catch(e) {
+        console.log('Notification sound error:', e);
+      }
+    };
+
+    // 显示浏览器通知
+    window.showBrowserNotification = function(title, body) {
+      try {
+        if (Notification.permission === 'granted') {
+          new Notification(title, { body: body, icon: 'favicon.png', tag: 'im-message' });
+        } else if (Notification.permission !== 'denied') {
+          Notification.requestPermission().then(function(perm) {
+            if (perm === 'granted') {
+              new Notification(title, { body: body, icon: 'favicon.png', tag: 'im-message' });
+            }
+          });
+        }
+      } catch(e) {
+        console.log('Browser notification error:', e);
+      }
+    };
+
+    // 页面加载时请求通知权限
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      // 延迟请求，等用户交互后再请求
+      document.addEventListener('click', function requestNotifPerm() {
+        Notification.requestPermission();
+        document.removeEventListener('click', requestNotifPerm);
+      }, { once: true });
+    }
+  </script>
 </head>
 <body>
   <!--
