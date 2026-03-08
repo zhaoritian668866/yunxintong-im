@@ -107,7 +107,7 @@ function seedDefaultData() {
   db.prepare(`INSERT INTO tenants (id, enterprise_id, name, contact_person, contact_phone, contact_email, plan, status, max_users, api_url, admin_url, ws_url, server_id, deploy_status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(tenant1Id, 'ENT001', '云信科技有限公司', '张三', '13800138001', 'zhangsan@yunxin.com', 'enterprise', 'active', 200,
-      'http://localhost:4001/api', 'http://localhost:4001/admin', 'ws://localhost:4001/ws', server1Id, 'deployed');
+      'https://4001-i2n18dh7l6sqyame3d6u0-92687a5f.sg1.manus.computer/api', 'https://4001-i2n18dh7l6sqyame3d6u0-92687a5f.sg1.manus.computer/admin', 'wss://4001-i2n18dh7l6sqyame3d6u0-92687a5f.sg1.manus.computer/ws', server1Id, 'deployed');
 
   db.prepare(`INSERT INTO tenants (id, enterprise_id, name, contact_person, contact_phone, contact_email, plan, status, max_users, deploy_status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)

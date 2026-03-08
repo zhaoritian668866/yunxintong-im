@@ -15,7 +15,7 @@ class ApiResponse {
 
 class ApiService {
   // SaaS平台地址（固定，部署在你的服务器上）
-  static String saasBaseUrl = 'http://localhost:3000/api';
+  static String saasBaseUrl = 'https://3000-i2n18dh7l6sqyame3d6u0-92687a5f.sg1.manus.computer/api';
 
   // 企业API地址（动态，用户输入企业ID后获取）
   static String enterpriseApiUrl = '';
