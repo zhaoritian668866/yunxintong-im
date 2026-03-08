@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import '../../../config/theme.dart';
 import '../../../services/api_service.dart';
 import 'chat_detail_page.dart';
@@ -17,17 +18,46 @@ class _ContactsPageState extends State<ContactsPage> {
   bool _loading = true;
   final _searchController = TextEditingController();
   bool _showSearch = false;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
     _loadContacts();
+    // 每5秒自动刷新在线状态
+    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (mounted) _silentRefresh();
+    });
   }
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _silentRefresh() async {
+    final res = await ApiService.getContacts();
+    if (!mounted) return;
+    if (res.isSuccess && res.data is Map) {
+      final query = _searchController.text.toLowerCase();
+      setState(() {
+        _contacts = res.data['contacts'] ?? [];
+        _departments = res.data['departments'] ?? [];
+        _groups = res.data['groups'] ?? [];
+        if (query.isEmpty) {
+          _filteredContacts = List.from(_contacts);
+        } else {
+          _filteredContacts = _contacts.where((c) {
+            final name = (c['nickname'] ?? c['username'] ?? '').toString().toLowerCase();
+            final dept = (c['department_name'] ?? '').toString().toLowerCase();
+            final pos = (c['position'] ?? '').toString().toLowerCase();
+            return name.contains(query) || dept.contains(query) || pos.contains(query);
+          }).toList();
+        }
+      });
+    }
   }
 
   Future<void> _loadContacts() async {

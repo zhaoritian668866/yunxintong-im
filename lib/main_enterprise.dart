@@ -12,7 +12,8 @@ void main() async {
   if (kIsWeb) {
     ApiService.enterpriseDirectUrl = '${Uri.base.origin}/api';
   } else {
-    ApiService.enterpriseDirectUrl = 'http://localhost:4001/api';
+    // 移动端需要配置企业服务器地址
+    ApiService.enterpriseDirectUrl = 'http://127.0.0.1:4001/api';
   }
   runApp(const EnterpriseApp());
 }

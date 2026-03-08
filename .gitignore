@@ -43,3 +43,15 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+server/data/
+server/deploy-package/data/
+
+# Node modules
+node_modules/
+server/node_modules/
+server/deploy-package/node_modules/

@@ -498,7 +498,7 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(t['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
                 const SizedBox(height: 4),
-                Text('企业ID: ${t['enterprise_id']} | 服务器: ${t['server_ip']}:${t['api_port'] ?? 4001} | 套餐: ${_planLabel(t['plan'] ?? '')}',
+                Text('企业ID: ${t['enterprise_id']} | 服务器: ${t['server_ip'] ?? ''} | API: ${t['api_url'] ?? ''} | 套餐: ${_planLabel(t['plan'] ?? '')}',
                   style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
               ])),
               Container(
@@ -516,76 +516,49 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
     if (_selectedTenantId == null || _selectedServerId == null) return;
     setState(() { _isDeploying = true; _deployProgress = 0; _deployLogs.clear(); });
 
-    final ip = _selectedServer?['ip_address'] ?? '';
     final tenantName = _selectedTenant?['name'] ?? '';
     final enterpriseId = _selectedTenant?['enterprise_id'] ?? '';
 
-    // 调用后端部署API
+    setState(() {
+      _deployLogs.add('=== 开始部署 $tenantName ($enterpriseId) ===');
+      _deployLogs.add('正在连接服务器并执行部署，请稍候...');
+      _deployProgress = 0.1;
+    });
+
+    // 调用后端真实SSH部署API
     final res = await ApiService.saasDeploy(_selectedTenantId!, {'server_id': _selectedServerId});
 
-    final logs = [
-      '=== 开始部署 $tenantName ($enterpriseId) ===',
-      '',
-      '> 连接目标服务器 $ip ...',
-      '> SSH连接${res.isSuccess ? '成功' : '失败'} ✓',
-      if (res.isSuccess) ...[
-        '> 检查系统环境...',
-        '> 操作系统: Ubuntu 22.04 LTS ✓',
-        '> 可用内存: ${_selectedServer?['memory_gb'] ?? 0}GB ✓',
-        '> 可用磁盘: ${_selectedServer?['disk_gb'] ?? 0}GB ✓',
-        '',
-        '> 安装 Node.js v22.x 运行环境...',
-        '> Node.js 安装完成 ✓',
-        '> 安装 PM2 进程管理器...',
-        '> PM2 安装完成 ✓',
-        '',
-        '> 上传企业独立后端部署包...',
-        '> 文件传输完成 (12.3MB) ✓',
-        '> 解压部署包...',
-        '> 安装后端依赖 (npm install --production)...',
-        '> 依赖安装完成 (128 packages) ✓',
-        '',
-        '> 初始化 SQLite 数据库...',
-        '> 创建数据表: users, messages, conversations, departments, groups...',
-        '> 数据库初始化完成 ✓',
-        '> 创建默认管理员账号 (admin/admin123)...',
-        '> 创建默认部门结构...',
-        '',
-        '> 配置 Nginx 反向代理...',
-        '> 生成 SSL 证书...',
-        '> Nginx 配置完成 ✓',
-        '',
-        '> 启动企业后端服务 (PM2)...',
-        '> 企业后端 API 启动成功 (端口: 4001) ✓',
-        '> 企业管理后台 启动成功 (端口: 8082) ✓',
-        '',
-        '> 服务健康检查...',
-        '> API 响应正常 (200 OK) ✓',
-        '> 数据库连接正常 ✓',
-        '',
-        '=== ✅ 部署完成! ===',
-        '',
-        '  企业名称: $tenantName',
-        '  企业ID: $enterpriseId',
-        '  API地址: http://$ip:4001',
-        '  管理后台: http://$ip:8082',
-        '  默认管理员: admin / admin123',
-        '',
-        '  用户可通过公用前端输入企业ID "$enterpriseId" 开始使用',
-      ] else ...[
-        '',
-        '> ❌ 部署失败: ${res.message}',
-        '> 请检查服务器连接信息是否正确',
-      ],
-    ];
+    if (!mounted) return;
 
-    for (int i = 0; i < logs.length; i++) {
-      await Future.delayed(Duration(milliseconds: logs[i].isEmpty ? 100 : 350));
-      if (!mounted) return;
-      setState(() { _deployLogs.add(logs[i]); _deployProgress = (i + 1) / logs.length; });
-    }
+    if (res.isSuccess) {
+      // 显示后端返回的真实部署日志
+      final serverLogs = res.data?['log'];
+      if (serverLogs is List) {
+        for (int i = 0; i < serverLogs.length; i++) {
+          await Future.delayed(const Duration(milliseconds: 200));
+          if (!mounted) return;
+          setState(() {
+            _deployLogs.add(serverLogs[i].toString());
+            _deployProgress = 0.1 + 0.9 * (i + 1) / serverLogs.length;
+          });
+        }
+      }
 
-    if (res.isSuccess && mounted) {
+      final apiUrl = res.data?['api_url'] ?? '';
+      final adminUrl = res.data?['admin_url'] ?? '';
+      setState(() {
+        _deployLogs.add('');
+        _deployLogs.add('=== ✅ 部署完成! ===');
+        _deployLogs.add('  企业名称: $tenantName');
+        _deployLogs.add('  企业ID: $enterpriseId');
+        _deployLogs.add('  API地址: $apiUrl');
+        _deployLogs.add('  管理后台: $adminUrl');
+        _deployLogs.add('  默认管理员: admin / 123456');
+        _deployLogs.add('');
+        _deployLogs.add('  用户可通过公用前端输入企业ID "$enterpriseId" 开始使用');
+        _deployProgress = 1.0;
+      });
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Row(children: [
@@ -598,6 +571,23 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         ),
       );
+
+      // 刷新数据
+      _loadData();
+    } else {
+      // 显示失败日志
+      final serverLogs = res.data?['log'];
+      if (serverLogs is List) {
+        for (final line in serverLogs) {
+          setState(() { _deployLogs.add(line.toString()); });
+        }
+      }
+      setState(() {
+        _deployLogs.add('');
+        _deployLogs.add('❌ 部署失败: ${res.message}');
+        _deployLogs.add('请检查服务器连接信息是否正确');
+        _deployProgress = 1.0;
+      });
     }
   }
 }

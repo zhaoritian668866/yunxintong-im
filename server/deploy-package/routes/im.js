@@ -62,8 +62,9 @@ router.post('/messages', verifyToken, (req, res) => {
     const member = db.prepare('SELECT id FROM conversation_members WHERE conversation_id=? AND user_id=?').get(conversation_id, req.user.id);
     if (!member) return res.json({ code: 403, message: '您不是该会话的成员' });
     const msgId = uuidv4();
-    db.prepare('INSERT INTO messages (id,conversation_id,sender_id,type,content,file_url,file_name,reply_to) VALUES (?,?,?,?,?,?,?,?)')
-      .run(msgId, conversation_id, req.user.id, type || 'text', content, file_url || null, file_name || null, reply_to || null);
+    const createdAt = new Date().toISOString();
+    db.prepare('INSERT INTO messages (id,conversation_id,sender_id,type,content,file_url,file_name,reply_to,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(msgId, conversation_id, req.user.id, type || 'text', content, file_url || null, file_name || null, reply_to || null, createdAt);
     db.prepare('UPDATE conversation_members SET unread_count=unread_count+1 WHERE conversation_id=? AND user_id!=?').run(conversation_id, req.user.id);
     db.prepare('UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?').run(conversation_id);
     const msg = db.prepare('SELECT m.*, u.nickname as sender_name, u.avatar as sender_avatar FROM messages m LEFT JOIN users u ON m.sender_id=u.id WHERE m.id=?').get(msgId);

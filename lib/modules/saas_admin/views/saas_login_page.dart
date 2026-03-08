@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import '../../../services/api_service.dart';
 
 class SaasLoginPage extends StatefulWidget {
@@ -16,6 +17,9 @@ class _SaasLoginPageState extends State<SaasLoginPage> {
   String? _errorMsg;
 
   Future<void> _login() async {
+    // 强制失焦确保Flutter Web同步输入框值
+    FocusScope.of(context).unfocus();
+    await Future.delayed(const Duration(milliseconds: 100));
     final username = _usernameController.text.trim();
     final password = _passwordController.text.trim();
     if (username.isEmpty || password.isEmpty) {

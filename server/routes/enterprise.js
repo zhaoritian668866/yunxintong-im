@@ -10,10 +10,12 @@ const { generateToken, verifyToken, requireRole } = require('../middleware/auth'
 router.post('/login', (req, res) => {
   try {
     const { username, password, enterprise_id } = req.body;
-    if (!username || !password || !enterprise_id) {
-      return res.json({ code: 400, message: '用户名、密码和企业ID不能为空' });
+    if (!username || !password) {
+      return res.json({ code: 400, message: '用户名和密码不能为空' });
     }
-    const tenant = db.prepare('SELECT id, enterprise_id, name, status FROM tenants WHERE enterprise_id = ?').get(enterprise_id);
+    // 企业独立服务器模式：如果没有传enterprise_id，默认使用ENT001
+    const eid = enterprise_id || process.env.ENTERPRISE_ID || 'ENT001';
+    const tenant = db.prepare('SELECT id, enterprise_id, name, status FROM tenants WHERE enterprise_id = ?').get(eid);
     if (!tenant) {
       return res.json({ code: 404, message: '企业ID不存在' });
     }

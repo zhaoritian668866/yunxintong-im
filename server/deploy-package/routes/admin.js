@@ -19,6 +19,22 @@ router.post('/login', (req, res) => {
   } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
 });
 
+// ==================== 修改管理员密码 ====================
+router.put('/password', verifyToken, requireRole('enterprise_admin'), (req, res) => {
+  try {
+    const { old_password, new_password } = req.body;
+    if (!old_password || !new_password) return res.json({ code: 400, message: '请输入当前密码和新密码' });
+    if (new_password.length < 6) return res.json({ code: 400, message: '新密码长度不能少于6位' });
+    const admin = db.prepare('SELECT password FROM admins WHERE id=?').get(req.user.id);
+    if (!admin || !bcrypt.compareSync(old_password, admin.password)) {
+      return res.json({ code: 401, message: '当前密码错误' });
+    }
+    db.prepare('UPDATE admins SET password=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
+      .run(bcrypt.hashSync(new_password, 10), req.user.id);
+    res.json({ code: 200, message: '密码修改成功' });
+  } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
+});
+
 // ==================== 仪表盘 ====================
 router.get('/dashboard', verifyToken, requireRole('enterprise_admin'), (req, res) => {
   try {

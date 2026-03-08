@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import '../../../services/api_service.dart';
 
 class EnterpriseIdPage extends StatefulWidget {
@@ -14,6 +15,9 @@ class _EnterpriseIdPageState extends State<EnterpriseIdPage> {
   String? _errorMsg;
 
   Future<void> _verifyEnterprise() async {
+    // 强制失焦确保Flutter Web同步输入框值
+    FocusScope.of(context).unfocus();
+    await Future.delayed(const Duration(milliseconds: 100));
     final eid = _controller.text.trim().toUpperCase();
     if (eid.isEmpty) {
       setState(() => _errorMsg = '请输入企业ID');

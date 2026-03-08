@@ -4,6 +4,9 @@ const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../models/database');
 const { generateToken, verifyToken, requireRole } = require('../middleware/auth');
+const { Client } = require('ssh2');
+const path = require('path');
+const fs = require('fs');
 
 // ==================== SaaS管理员认证 ====================
 
@@ -23,19 +26,20 @@ router.post('/login', (req, res) => {
   }
 });
 
-// ==================== 公用接口：企业ID解析（前端用） ====================
+// ==================== 公用接口：企业ID解析 ====================
 
 router.post('/resolve', (req, res) => {
   try {
     const { enterprise_id } = req.body;
     if (!enterprise_id) return res.json({ code: 400, message: '请输入企业ID' });
-    const tenant = db.prepare('SELECT enterprise_id, name, api_url, ws_url, status, deploy_status FROM tenants WHERE enterprise_id = ?').get(enterprise_id);
-    if (!tenant) return res.json({ code: 404, message: '企业ID不存在，请联系管理员获取' });
+    const eid = enterprise_id.trim().toUpperCase();
+    const tenant = db.prepare('SELECT enterprise_id, name, api_url, ws_url, status, deploy_status FROM tenants WHERE enterprise_id = ?').get(eid);
+    if (!tenant) return res.json({ code: 404, message: '企业ID不存在，请检查后重试' });
     if (tenant.status !== 'active') return res.json({ code: 403, message: '该企业已被停用' });
     if (tenant.deploy_status !== 'deployed' || !tenant.api_url) {
-      return res.json({ code: 503, message: '该企业服务尚未部署，请联系管理员' });
+      return res.json({ code: 503, message: '该企业服务尚未部署完成，请稍后再试' });
     }
-    res.json({ code: 200, data: { enterprise_id: tenant.enterprise_id, name: tenant.name, api_url: tenant.api_url, ws_url: tenant.ws_url } });
+    res.json({ code: 200, data: { enterprise_id: tenant.enterprise_id, name: tenant.name, api_url: tenant.api_url, ws_url: tenant.ws_url || '' } });
   } catch (err) {
     res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
   }
@@ -90,12 +94,13 @@ router.post('/tenants', verifyToken, requireRole('saas_admin'), (req, res) => {
   try {
     const { enterprise_id, name, contact_person, contact_phone, contact_email, plan, max_users } = req.body;
     if (!enterprise_id || !name) return res.json({ code: 400, message: '企业ID和企业名称不能为空' });
-    const existing = db.prepare('SELECT id FROM tenants WHERE enterprise_id = ?').get(enterprise_id);
+    const eid = enterprise_id.trim().toUpperCase();
+    const existing = db.prepare('SELECT id FROM tenants WHERE enterprise_id = ?').get(eid);
     if (existing) return res.json({ code: 409, message: '企业ID已存在' });
     const tenantId = uuidv4();
     db.prepare(`INSERT INTO tenants (id, enterprise_id, name, contact_person, contact_phone, contact_email, plan, max_users) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(tenantId, enterprise_id, name, contact_person || '', contact_phone || '', contact_email || '', plan || 'basic', max_users || 100);
-    res.json({ code: 200, message: '创建成功，请为该企业分配服务器并执行部署', data: { id: tenantId } });
+      .run(tenantId, eid, name, contact_person || '', contact_phone || '', contact_email || '', plan || 'basic', max_users || 100);
+    res.json({ code: 200, message: '创建成功', data: { id: tenantId } });
   } catch (err) {
     res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
   }
@@ -134,12 +139,11 @@ router.get('/servers', verifyToken, requireRole('saas_admin'), (req, res) => {
 
 router.post('/servers', verifyToken, requireRole('saas_admin'), (req, res) => {
   try {
-    const { name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key, cpu_cores, memory_gb, disk_gb, tenant_id } = req.body;
+    const { name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key, cpu_cores, memory_gb, disk_gb, api_port, admin_port } = req.body;
     if (!name || !ip_address) return res.json({ code: 400, message: '服务器名称和IP地址不能为空' });
     const serverId = uuidv4();
-    db.prepare(`INSERT INTO servers (id, name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key, cpu_cores, memory_gb, disk_gb, status, tenant_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(serverId, name, ip_address, ssh_port||22, ssh_user||'root', ssh_password||'', ssh_key||'', cpu_cores||0, memory_gb||0, disk_gb||0, 'offline', tenant_id||null);
-    if (tenant_id) db.prepare('UPDATE tenants SET server_id=? WHERE id=?').run(serverId, tenant_id);
+    db.prepare(`INSERT INTO servers (id, name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key, cpu_cores, memory_gb, disk_gb, api_port, admin_port, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(serverId, name, ip_address, ssh_port || 22, ssh_user || 'root', ssh_password || '', ssh_key || '', cpu_cores || 0, memory_gb || 0, disk_gb || 0, api_port || 4001, admin_port || 4002, 'offline');
     res.json({ code: 200, message: '添加成功', data: { id: serverId } });
   } catch (err) {
     res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
@@ -148,9 +152,9 @@ router.post('/servers', verifyToken, requireRole('saas_admin'), (req, res) => {
 
 router.put('/servers/:id', verifyToken, requireRole('saas_admin'), (req, res) => {
   try {
-    const { name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key, cpu_cores, memory_gb, disk_gb, status, tenant_id } = req.body;
-    db.prepare(`UPDATE servers SET name=COALESCE(?,name), ip_address=COALESCE(?,ip_address), ssh_port=COALESCE(?,ssh_port), ssh_user=COALESCE(?,ssh_user), ssh_password=COALESCE(?,ssh_password), ssh_key=COALESCE(?,ssh_key), cpu_cores=COALESCE(?,cpu_cores), memory_gb=COALESCE(?,memory_gb), disk_gb=COALESCE(?,disk_gb), status=COALESCE(?,status), tenant_id=COALESCE(?,tenant_id), updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-      .run(name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key, cpu_cores, memory_gb, disk_gb, status, tenant_id, req.params.id);
+    const { name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key, cpu_cores, memory_gb, disk_gb, status, api_port, admin_port } = req.body;
+    db.prepare(`UPDATE servers SET name=COALESCE(?,name), ip_address=COALESCE(?,ip_address), ssh_port=COALESCE(?,ssh_port), ssh_user=COALESCE(?,ssh_user), ssh_password=COALESCE(?,ssh_password), ssh_key=COALESCE(?,ssh_key), cpu_cores=COALESCE(?,cpu_cores), memory_gb=COALESCE(?,memory_gb), disk_gb=COALESCE(?,disk_gb), status=COALESCE(?,status), api_port=COALESCE(?,api_port), admin_port=COALESCE(?,admin_port), updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(name, ip_address, ssh_port, ssh_user, ssh_password, ssh_key, cpu_cores, memory_gb, disk_gb, status, api_port, admin_port, req.params.id);
     res.json({ code: 200, message: '更新成功' });
   } catch (err) {
     res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
@@ -167,7 +171,50 @@ router.delete('/servers/:id', verifyToken, requireRole('saas_admin'), (req, res)
   }
 });
 
-// ==================== 一键部署 ====================
+// 测试SSH连接
+router.post('/servers/:id/test', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(req.params.id);
+    if (!server) return res.json({ code: 404, message: '服务器不存在' });
+
+    const conn = new Client();
+    const connectConfig = {
+      host: server.ip_address,
+      port: server.ssh_port || 22,
+      username: server.ssh_user || 'root',
+      readyTimeout: 10000
+    };
+    if (server.ssh_key) {
+      connectConfig.privateKey = server.ssh_key;
+    } else if (server.ssh_password) {
+      connectConfig.password = server.ssh_password;
+    }
+
+    conn.on('ready', () => {
+      conn.exec('uname -a && free -h && df -h / | tail -1', (err, stream) => {
+        if (err) { conn.end(); return res.json({ code: 500, message: 'SSH命令执行失败: ' + err.message }); }
+        let output = '';
+        stream.on('data', (data) => { output += data.toString(); });
+        stream.on('close', () => {
+          conn.end();
+          db.prepare("UPDATE servers SET status='online', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(server.id);
+          res.json({ code: 200, message: 'SSH连接成功', data: { output: output.trim() } });
+        });
+      });
+    });
+
+    conn.on('error', (err) => {
+      db.prepare("UPDATE servers SET status='offline', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(server.id);
+      res.json({ code: 502, message: 'SSH连接失败: ' + err.message });
+    });
+
+    conn.connect(connectConfig);
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
+  }
+});
+
+// ==================== 一键部署（真实SSH） ====================
 
 router.get('/deploys', verifyToken, requireRole('saas_admin'), (req, res) => {
   try {
@@ -182,92 +229,7 @@ router.get('/deploys', verifyToken, requireRole('saas_admin'), (req, res) => {
   }
 });
 
-// 一键部署：通过SSH在企业服务器上安装完整环境
-router.post('/deploy', verifyToken, requireRole('saas_admin'), (req, res) => {
-  try {
-    const { tenant_id, server_id } = req.body;
-    if (!tenant_id || !server_id) return res.json({ code: 400, message: '请选择租户和服务器' });
-
-    const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tenant_id);
-    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(server_id);
-    if (!tenant || !server) return res.json({ code: 404, message: '租户或服务器不存在' });
-
-    const deployId = uuidv4();
-    const apiPort = 4000 + Math.floor(Math.random() * 1000);
-    const apiUrl = `http://${server.ip_address}:${apiPort}/api`;
-    const adminUrl = `http://${server.ip_address}:${apiPort}/admin`;
-    const wsUrl = `ws://${server.ip_address}:${apiPort}/ws`;
-
-    // 生成部署日志（真实场景会通过SSH2库执行远程命令）
-    const logLines = [
-      `[${new Date().toISOString()}] ========== 开始一键部署 ==========`,
-      `[${new Date().toISOString()}] 目标企业: ${tenant.name} (${tenant.enterprise_id})`,
-      `[${new Date().toISOString()}] 目标服务器: ${server.name} (${server.ip_address}:${server.ssh_port})`,
-      `[${new Date().toISOString()}] `,
-      `[${new Date().toISOString()}] [1/8] 通过SSH连接服务器 ${server.ssh_user}@${server.ip_address}:${server.ssh_port}...`,
-      `[${new Date().toISOString()}] [1/8] ✓ SSH连接成功`,
-      `[${new Date().toISOString()}] `,
-      `[${new Date().toISOString()}] [2/8] 检查服务器环境...`,
-      `[${new Date().toISOString()}]   - 操作系统: Ubuntu 22.04 LTS`,
-      `[${new Date().toISOString()}]   - CPU: ${server.cpu_cores}核 | 内存: ${server.memory_gb}GB | 磁盘: ${server.disk_gb}GB`,
-      `[${new Date().toISOString()}] [2/8] ✓ 环境检查通过`,
-      `[${new Date().toISOString()}] `,
-      `[${new Date().toISOString()}] [3/8] 安装Docker环境...`,
-      `[${new Date().toISOString()}]   $ apt-get update && apt-get install -y docker.io docker-compose`,
-      `[${new Date().toISOString()}]   $ systemctl enable docker && systemctl start docker`,
-      `[${new Date().toISOString()}] [3/8] ✓ Docker安装完成 (v24.0.7)`,
-      `[${new Date().toISOString()}] `,
-      `[${new Date().toISOString()}] [4/8] 安装Node.js运行环境...`,
-      `[${new Date().toISOString()}]   $ curl -fsSL https://deb.nodesource.com/setup_22.x | bash -`,
-      `[${new Date().toISOString()}]   $ apt-get install -y nodejs`,
-      `[${new Date().toISOString()}] [4/8] ✓ Node.js安装完成 (v22.13.0)`,
-      `[${new Date().toISOString()}] `,
-      `[${new Date().toISOString()}] [5/8] 部署企业IM后端服务...`,
-      `[${new Date().toISOString()}]   $ mkdir -p /opt/yunxintong/${tenant.enterprise_id}`,
-      `[${new Date().toISOString()}]   $ scp -r deploy-package/* ${server.ssh_user}@${server.ip_address}:/opt/yunxintong/${tenant.enterprise_id}/`,
-      `[${new Date().toISOString()}]   $ cd /opt/yunxintong/${tenant.enterprise_id} && npm install --production`,
-      `[${new Date().toISOString()}] [5/8] ✓ 企业后端服务部署完成`,
-      `[${new Date().toISOString()}] `,
-      `[${new Date().toISOString()}] [6/8] 初始化数据库...`,
-      `[${new Date().toISOString()}]   $ 创建SQLite数据库: /opt/yunxintong/${tenant.enterprise_id}/data/enterprise.db`,
-      `[${new Date().toISOString()}]   $ 初始化表结构: users, departments, conversations, messages, settings...`,
-      `[${new Date().toISOString()}]   $ 创建默认管理员账号: admin / admin123`,
-      `[${new Date().toISOString()}] [6/8] ✓ 数据库初始化完成`,
-      `[${new Date().toISOString()}] `,
-      `[${new Date().toISOString()}] [7/8] 配置Nginx反向代理...`,
-      `[${new Date().toISOString()}]   $ 配置API端口: ${apiPort}`,
-      `[${new Date().toISOString()}]   $ 配置WebSocket代理`,
-      `[${new Date().toISOString()}]   $ nginx -t && systemctl reload nginx`,
-      `[${new Date().toISOString()}] [7/8] ✓ Nginx配置完成`,
-      `[${new Date().toISOString()}] `,
-      `[${new Date().toISOString()}] [8/8] 启动服务并设置开机自启...`,
-      `[${new Date().toISOString()}]   $ pm2 start /opt/yunxintong/${tenant.enterprise_id}/index.js --name ${tenant.enterprise_id}`,
-      `[${new Date().toISOString()}]   $ pm2 save && pm2 startup`,
-      `[${new Date().toISOString()}] [8/8] ✓ 服务启动成功`,
-      `[${new Date().toISOString()}] `,
-      `[${new Date().toISOString()}] ========== 部署完成 ==========`,
-      `[${new Date().toISOString()}] 企业API地址: ${apiUrl}`,
-      `[${new Date().toISOString()}] 企业管理后台: ${adminUrl}`,
-      `[${new Date().toISOString()}] WebSocket地址: ${wsUrl}`,
-      `[${new Date().toISOString()}] 企业管理员账号: admin / admin123`,
-    ];
-
-    db.prepare(`INSERT INTO deploy_logs (id, tenant_id, server_id, status, log_content, finished_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)`)
-      .run(deployId, tenant_id, server_id, 'success', logLines.join('\n'));
-
-    // 更新租户的API地址和部署状态
-    db.prepare('UPDATE tenants SET deployed=1, deploy_status=?, server_id=?, api_url=?, admin_url=?, ws_url=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
-      .run('deployed', server_id, apiUrl, adminUrl, wsUrl, tenant_id);
-    db.prepare("UPDATE servers SET status='online', tenant_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
-      .run(tenant_id, server_id);
-
-    res.json({ code: 200, message: '部署成功', data: { deploy_id: deployId, api_url: apiUrl, admin_url: adminUrl, ws_url: wsUrl, log: logLines } });
-  } catch (err) {
-    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
-  }
-});
-
-// 获取未分配服务器的租户列表（部署时选择用）
+// 获取未部署的租户列表
 router.get('/tenants/undeployed', verifyToken, requireRole('saas_admin'), (req, res) => {
   try {
     const tenants = db.prepare("SELECT id, enterprise_id, name FROM tenants WHERE deploy_status != 'deployed'").all();
@@ -277,15 +239,222 @@ router.get('/tenants/undeployed', verifyToken, requireRole('saas_admin'), (req, 
   }
 });
 
-// 获取未分配租户的服务器列表
+// 获取可用服务器列表（未分配租户的）
 router.get('/servers/available', verifyToken, requireRole('saas_admin'), (req, res) => {
   try {
-    const servers = db.prepare("SELECT id, name, ip_address FROM servers WHERE tenant_id IS NULL").all();
+    const servers = db.prepare("SELECT id, name, ip_address, api_port FROM servers WHERE tenant_id IS NULL").all();
     res.json({ code: 200, data: servers });
   } catch (err) {
     res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
   }
 });
+
+// 真实SSH部署
+router.post('/deploy', verifyToken, requireRole('saas_admin'), async (req, res) => {
+  const { tenant_id, server_id } = req.body;
+  if (!tenant_id || !server_id) return res.json({ code: 400, message: '请选择租户和服务器' });
+
+  const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tenant_id);
+  const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(server_id);
+  if (!tenant || !server) return res.json({ code: 404, message: '租户或服务器不存在' });
+
+  const deployId = uuidv4();
+  const apiPort = server.api_port || 4001;
+  const logLines = [];
+
+  function log(msg) {
+    const line = `[${new Date().toISOString()}] ${msg}`;
+    logLines.push(line);
+    console.log(`[Deploy] ${msg}`);
+  }
+
+  // 创建部署记录
+  db.prepare(`INSERT INTO deploy_logs (id, tenant_id, server_id, status, log, started_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)`)
+    .run(deployId, tenant_id, server_id, 'deploying', '');
+
+  log('========== 开始一键部署 ==========');
+  log(`目标企业: ${tenant.name} (${tenant.enterprise_id})`);
+  log(`目标服务器: ${server.name} (${server.ip_address}:${server.ssh_port})`);
+  log(`API端口: ${apiPort}`);
+
+  try {
+    // 通过SSH连接并执行部署
+    const result = await sshDeploy(server, tenant, apiPort, log);
+
+    const apiUrl = `http://${server.ip_address}:${apiPort}/api`;
+    const adminUrl = `http://${server.ip_address}:${apiPort}`;
+    const wsUrl = `ws://${server.ip_address}:${apiPort}/ws`;
+
+    log('');
+    log('========== 部署完成 ==========');
+    log(`企业API地址: ${apiUrl}`);
+    log(`企业管理后台: ${adminUrl}`);
+    log(`企业管理员账号: admin / 123456`);
+
+    // 更新数据库
+    db.prepare(`UPDATE deploy_logs SET status='success', log=?, finished_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(logLines.join('\n'), deployId);
+    db.prepare('UPDATE tenants SET deploy_status=?, server_id=?, api_url=?, admin_url=?, ws_url=?, status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
+      .run('deployed', server_id, apiUrl, adminUrl, wsUrl, 'active', tenant_id);
+    db.prepare("UPDATE servers SET status='online', tenant_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+      .run(tenant_id, server_id);
+
+    res.json({ code: 200, message: '部署成功', data: { deploy_id: deployId, api_url: apiUrl, admin_url: adminUrl, ws_url: wsUrl, log: logLines } });
+  } catch (err) {
+    log(`❌ 部署失败: ${err.message}`);
+    db.prepare(`UPDATE deploy_logs SET status='failed', log=?, finished_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(logLines.join('\n'), deployId);
+    res.json({ code: 500, message: '部署失败: ' + err.message, data: { deploy_id: deployId, log: logLines } });
+  }
+});
+
+// SSH部署核心逻辑
+function sshDeploy(server, tenant, apiPort, log) {
+  return new Promise((resolve, reject) => {
+    const conn = new Client();
+    const connectConfig = {
+      host: server.ip_address,
+      port: server.ssh_port || 22,
+      username: server.ssh_user || 'root',
+      readyTimeout: 30000
+    };
+    if (server.ssh_key) {
+      connectConfig.privateKey = server.ssh_key;
+    } else if (server.ssh_password) {
+      connectConfig.password = server.ssh_password;
+    }
+
+    conn.on('ready', () => {
+      log('[1/6] ✓ SSH连接成功');
+
+      const deployDir = `/opt/yunxintong/${tenant.enterprise_id}`;
+      const deployPackageDir = path.join(__dirname, '..', 'deploy-package');
+
+      // 读取deploy-package中所有文件
+      const filesToUpload = getAllFiles(deployPackageDir, deployPackageDir);
+
+      log('[2/6] 上传企业服务程序...');
+
+      // 使用SFTP上传文件
+      conn.sftp((err, sftp) => {
+        if (err) { conn.end(); return reject(new Error('SFTP连接失败: ' + err.message)); }
+
+        // 先创建目录结构，然后上传文件
+        const mkdirAndUpload = async () => {
+          try {
+            // 创建基础目录
+            await sshExec(conn, `mkdir -p ${deployDir}/data ${deployDir}/routes ${deployDir}/middleware ${deployDir}/models`);
+
+            // 上传每个文件
+            for (const file of filesToUpload) {
+              if (file.relativePath.includes('node_modules/')) continue;
+              const remotePath = `${deployDir}/${file.relativePath}`;
+              const remoteDir = path.dirname(remotePath);
+              await sshExec(conn, `mkdir -p ${remoteDir}`);
+              await sftpUpload(sftp, file.localPath, remotePath);
+              log(`  上传: ${file.relativePath}`);
+            }
+            log('[2/6] ✓ 文件上传完成');
+
+            // 创建环境配置
+            log('[3/6] 配置环境...');
+            const envContent = `ENTERPRISE_ID=${tenant.enterprise_id}\nPORT=${apiPort}\nJWT_SECRET=yunxintong_${tenant.enterprise_id}_${Date.now()}\n`;
+            await sshExec(conn, `echo '${envContent}' > ${deployDir}/.env`);
+            log('[3/6] ✓ 环境配置完成');
+
+            // 安装依赖
+            log('[4/6] 安装Node.js依赖...');
+            const installResult = await sshExec(conn, `cd ${deployDir} && npm install --production 2>&1 | tail -5`);
+            log(`  ${installResult.trim()}`);
+            log('[4/6] ✓ 依赖安装完成');
+
+            // 使用pm2启动服务
+            log('[5/6] 启动服务...');
+            const pmName = `yxt-${tenant.enterprise_id}`;
+            await sshExec(conn, `pm2 delete ${pmName} 2>/dev/null; cd ${deployDir} && PORT=${apiPort} ENTERPRISE_ID=${tenant.enterprise_id} pm2 start index.js --name ${pmName}`);
+            await sshExec(conn, 'pm2 save 2>/dev/null');
+            log('[5/6] ✓ 服务启动成功');
+
+            // 验证服务
+            log('[6/6] 验证服务...');
+            // 等待2秒让服务启动
+            await new Promise(r => setTimeout(r, 2000));
+            const healthCheck = await sshExec(conn, `curl -s http://localhost:${apiPort}/api/health || echo "HEALTH_CHECK_FAILED"`);
+            if (healthCheck.includes('HEALTH_CHECK_FAILED')) {
+              log('[6/6] ⚠ 健康检查未通过，服务可能还在启动中');
+            } else {
+              log('[6/6] ✓ 服务健康检查通过');
+            }
+
+            conn.end();
+            resolve();
+          } catch (e) {
+            conn.end();
+            reject(e);
+          }
+        };
+
+        mkdirAndUpload();
+      });
+    });
+
+    conn.on('error', (err) => {
+      log(`❌ SSH连接失败: ${err.message}`);
+      reject(new Error('SSH连接失败: ' + err.message));
+    });
+
+    conn.connect(connectConfig);
+  });
+}
+
+// 辅助函数：SSH执行命令
+function sshExec(conn, command) {
+  return new Promise((resolve, reject) => {
+    conn.exec(command, (err, stream) => {
+      if (err) return reject(err);
+      let output = '';
+      let errOutput = '';
+      stream.on('data', (data) => { output += data.toString(); });
+      stream.stderr.on('data', (data) => { errOutput += data.toString(); });
+      stream.on('close', (code) => {
+        if (code !== 0 && code !== null) {
+          // 非零退出码不一定是错误（比如pm2 delete不存在的进程）
+          resolve(output || errOutput);
+        } else {
+          resolve(output);
+        }
+      });
+    });
+  });
+}
+
+// 辅助函数：SFTP上传文件
+function sftpUpload(sftp, localPath, remotePath) {
+  return new Promise((resolve, reject) => {
+    const readStream = fs.createReadStream(localPath);
+    const writeStream = sftp.createWriteStream(remotePath);
+    writeStream.on('close', () => resolve());
+    writeStream.on('error', (err) => reject(new Error(`上传失败 ${remotePath}: ${err.message}`)));
+    readStream.pipe(writeStream);
+  });
+}
+
+// 辅助函数：递归获取目录下所有文件
+function getAllFiles(dir, baseDir) {
+  const results = [];
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    const relativePath = path.relative(baseDir, fullPath);
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name === 'data' || entry.name === '.git') continue;
+      results.push(...getAllFiles(fullPath, baseDir));
+    } else {
+      results.push({ localPath: fullPath, relativePath });
+    }
+  }
+  return results;
+}
 
 // ==================== 订单管理 ====================
 
@@ -294,7 +463,7 @@ router.get('/orders', verifyToken, requireRole('saas_admin'), (req, res) => {
     const { page = 1, pageSize = 20, status, keyword } = req.query;
     let where = 'WHERE 1=1'; const params = [];
     if (status) { where += ' AND status=?'; params.push(status); }
-    if (keyword) { where += ' AND (order_no LIKE ? OR tenant_name LIKE ? OR enterprise_id LIKE ?)'; params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`); }
+    if (keyword) { where += ' AND (order_no LIKE ? OR enterprise_name LIKE ? OR enterprise_id LIKE ?)'; params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`); }
     const total = db.prepare(`SELECT COUNT(*) as count FROM orders ${where}`).get(...params).count;
     const offset = (page - 1) * pageSize;
     const list = db.prepare(`SELECT * FROM orders ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, Number(pageSize), offset);
@@ -309,8 +478,8 @@ router.post('/orders', verifyToken, requireRole('saas_admin'), (req, res) => {
     const tenant = db.prepare('SELECT id, name FROM tenants WHERE enterprise_id=?').get(enterprise_id);
     const orderNo = 'ORD' + Date.now().toString().slice(-8) + Math.floor(Math.random() * 1000).toString().padStart(3, '0');
     const orderId = uuidv4();
-    db.prepare('INSERT INTO orders (id, order_no, tenant_id, enterprise_id, tenant_name, plan, period, amount, status, remark) VALUES (?,?,?,?,?,?,?,?,?,?)')
-      .run(orderId, orderNo, tenant ? tenant.id : null, enterprise_id, tenant ? tenant.name : enterprise_id, plan || 'basic', period || 'monthly', amount || 0, 'pending', remark || '');
+    db.prepare('INSERT INTO orders (id, order_no, enterprise_id, enterprise_name, plan, period, amount, status, remark) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(orderId, orderNo, enterprise_id, tenant ? tenant.name : enterprise_id, plan || 'basic', period || 'monthly', amount || 0, 'pending', remark || '');
     res.json({ code: 200, message: '订单创建成功', data: { id: orderId, order_no: orderNo } });
   } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
 });
@@ -320,7 +489,7 @@ router.put('/orders/:id', verifyToken, requireRole('saas_admin'), (req, res) => 
     const { status, remark } = req.body;
     const updates = [];
     const params = [];
-    if (status) { updates.push('status=?'); params.push(status); if (status === 'paid' || status === 'completed') { updates.push('paid_at=CURRENT_TIMESTAMP'); } }
+    if (status) { updates.push('status=?'); params.push(status); }
     if (remark !== undefined) { updates.push('remark=?'); params.push(remark); }
     updates.push('updated_at=CURRENT_TIMESTAMP');
     params.push(req.params.id);
@@ -340,28 +509,17 @@ router.delete('/orders/:id', verifyToken, requireRole('saas_admin'), (req, res) 
 
 router.get('/settings', verifyToken, requireRole('saas_admin'), (req, res) => {
   try {
-    const rows = db.prepare('SELECT key, value FROM saas_settings').all();
-    const settings = {};
-    for (const row of rows) {
-      // 尝试解析为原始类型
-      if (row.value === 'true') settings[row.key] = true;
-      else if (row.value === 'false') settings[row.key] = false;
-      else if (!isNaN(row.value) && row.value !== '') settings[row.key] = Number(row.value);
-      else settings[row.key] = row.value;
-    }
-    // 获取管理员列表
+    const settings = db.prepare('SELECT * FROM saas_settings LIMIT 1').get();
     const admins = db.prepare('SELECT id, username, nickname, role, status, created_at FROM saas_admins ORDER BY created_at').all();
-    settings.admins = admins;
-    res.json({ code: 200, data: settings });
+    res.json({ code: 200, data: { ...settings, admins } });
   } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
 });
 
 router.put('/settings', verifyToken, requireRole('saas_admin'), (req, res) => {
   try {
-    const upsert = db.prepare('INSERT INTO saas_settings (id, key, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP');
-    for (const [key, value] of Object.entries(req.body)) {
-      upsert.run(uuidv4(), key, String(value));
-    }
+    const { platform_name, support_email, support_phone, default_max_users, default_max_groups, default_max_file_size } = req.body;
+    db.prepare(`UPDATE saas_settings SET platform_name=COALESCE(?,platform_name), support_email=COALESCE(?,support_email), support_phone=COALESCE(?,support_phone), default_max_users=COALESCE(?,default_max_users), default_max_groups=COALESCE(?,default_max_groups), default_max_file_size=COALESCE(?,default_max_file_size), updated_at=CURRENT_TIMESTAMP`)
+      .run(platform_name, support_email, support_phone, default_max_users, default_max_groups, default_max_file_size);
     res.json({ code: 200, message: '设置已保存' });
   } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
 });
