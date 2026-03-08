@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../../../app/app_state.dart';
 import '../../../widgets/admin_layout.dart';
+import '../../../services/api_service.dart';
 import 'enterprise_dashboard_page.dart';
 import 'enterprise_employee_page.dart';
 import 'enterprise_department_page.dart';
 import 'enterprise_settings_page.dart';
+import 'enterprise_chat_records_page.dart';
 
 class EnterpriseAdminPage extends StatefulWidget {
   const EnterpriseAdminPage({super.key});
@@ -21,8 +21,8 @@ class _EnterpriseAdminPageState extends State<EnterpriseAdminPage> {
     AdminMenuItem(icon: Icons.dashboard_outlined, label: '仪表盘', route: 'dashboard'),
     AdminMenuItem(icon: Icons.people_outlined, label: '员工管理', route: 'employees'),
     AdminMenuItem(icon: Icons.account_tree_outlined, label: '部门管理', route: 'departments'),
+    AdminMenuItem(icon: Icons.chat_outlined, label: '聊天记录', route: 'chat_records'),
     AdminMenuItem(icon: Icons.group_outlined, label: '群组管理', route: 'groups'),
-    AdminMenuItem(icon: Icons.security_outlined, label: '权限管理', route: 'permissions'),
     AdminMenuItem(icon: Icons.settings_outlined, label: '系统设置', route: 'settings'),
   ];
 
@@ -30,21 +30,23 @@ class _EnterpriseAdminPageState extends State<EnterpriseAdminPage> {
     EnterpriseDashboardPage(),
     EnterpriseEmployeePage(),
     EnterpriseDepartmentPage(),
-    Center(child: Text('群组管理 - 开发中')),
-    Center(child: Text('权限管理 - 开发中')),
+    EnterpriseChatRecordsPage(),
+    Center(child: Text('群组管理 - 开发中', style: TextStyle(fontSize: 16, color: Colors.grey))),
     EnterpriseSettingsPage(),
   ];
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppState>();
     return AdminLayout(
-      title: appState.enterpriseName.isEmpty ? '创新科技有限公司' : appState.enterpriseName,
-      subtitle: '企业管理后台',
+      title: '企业管理后台',
+      subtitle: '即时通讯管理',
       menuItems: _menuItems,
       selectedIndex: _selectedIndex,
       onMenuSelected: (i) => setState(() => _selectedIndex = i),
-      onLogout: () => context.read<AppState>().logout(),
+      onLogout: () {
+        ApiService.clearToken();
+        Navigator.of(context).pushNamedAndRemoveUntil('/enterprise/login', (route) => false);
+      },
       body: _pages[_selectedIndex],
     );
   }

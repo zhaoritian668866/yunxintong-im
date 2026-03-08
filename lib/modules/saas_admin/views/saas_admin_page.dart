@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../../../app/app_state.dart';
 import '../../../widgets/admin_layout.dart';
+import '../../../services/api_service.dart';
 import 'saas_dashboard_page.dart';
 import 'saas_tenant_page.dart';
 import 'saas_server_page.dart';
@@ -31,8 +30,8 @@ class _SaasAdminPageState extends State<SaasAdminPage> {
     SaasTenantPage(),
     SaasServerPage(),
     SaasDeployPage(),
-    Center(child: Text('订单管理 - 开发中')),
-    Center(child: Text('系统设置 - 开发中')),
+    Center(child: Text('订单管理 - 开发中', style: TextStyle(fontSize: 16, color: Colors.grey))),
+    Center(child: Text('系统设置 - 开发中', style: TextStyle(fontSize: 16, color: Colors.grey))),
   ];
 
   @override
@@ -43,7 +42,10 @@ class _SaasAdminPageState extends State<SaasAdminPage> {
       menuItems: _menuItems,
       selectedIndex: _selectedIndex,
       onMenuSelected: (i) => setState(() => _selectedIndex = i),
-      onLogout: () => context.read<AppState>().logout(),
+      onLogout: () {
+        ApiService.clearToken();
+        Navigator.of(context).pushNamedAndRemoveUntil('/saas/login', (route) => false);
+      },
       body: _pages[_selectedIndex],
     );
   }
