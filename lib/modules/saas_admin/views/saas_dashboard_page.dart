@@ -29,9 +29,31 @@ class _SaasDashboardPageState extends State<SaasDashboardPage> {
     if (mounted) {
       setState(() {
         _isLoading = false;
-        if (statsRes.isSuccess) _stats = statsRes.data;
-        if (tenantsRes.isSuccess) _tenants = List<Map<String, dynamic>>.from(tenantsRes.data?['tenants'] ?? []);
-        if (serversRes.isSuccess) _servers = List<Map<String, dynamic>>.from(serversRes.data?['servers'] ?? []);
+        if (statsRes.isSuccess) {
+          // dashboard返回 { stats: {...}, recentTenants: [...], recentDeploys: [...] }
+          final dashData = statsRes.data;
+          if (dashData is Map) {
+            _stats = Map<String, dynamic>.from(dashData['stats'] ?? dashData);
+          }
+        }
+        if (tenantsRes.isSuccess) {
+          // tenants返回 { total, page, pageSize, list: [...] }
+          final tData = tenantsRes.data;
+          if (tData is Map) {
+            _tenants = List<Map<String, dynamic>>.from(tData['list'] ?? tData['tenants'] ?? []);
+          } else if (tData is List) {
+            _tenants = List<Map<String, dynamic>>.from(tData);
+          }
+        }
+        if (serversRes.isSuccess) {
+          // servers返回直接是数组
+          final sData = serversRes.data;
+          if (sData is List) {
+            _servers = List<Map<String, dynamic>>.from(sData);
+          } else if (sData is Map) {
+            _servers = List<Map<String, dynamic>>.from(sData['servers'] ?? sData['list'] ?? []);
+          }
+        }
       });
     }
   }
@@ -51,10 +73,10 @@ class _SaasDashboardPageState extends State<SaasDashboardPage> {
               crossAxisCount: crossCount, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
               crossAxisSpacing: 16, mainAxisSpacing: 16, childAspectRatio: 1.8,
               children: [
-                StatCard(title: '租户总数', value: '${_stats?['total_tenants'] ?? 0}', icon: Icons.business, color: AppColors.primary),
-                StatCard(title: '活跃租户', value: '${_stats?['active_tenants'] ?? 0}', icon: Icons.check_circle_outline, color: AppColors.success),
-                StatCard(title: '服务器总数', value: '${_stats?['total_servers'] ?? 0}', icon: Icons.dns, color: AppColors.warning, subtitle: '在线 ${_stats?['online_servers'] ?? 0} 台'),
-                StatCard(title: '待处理工单', value: '${_stats?['pending_tickets'] ?? 0}', icon: Icons.support_agent, color: AppColors.info),
+                StatCard(title: '租户总数', value: '${_stats?['totalTenants'] ?? _stats?['total_tenants'] ?? 0}', icon: Icons.business, color: AppColors.primary),
+                StatCard(title: '活跃租户', value: '${_stats?['activeTenants'] ?? _stats?['active_tenants'] ?? 0}', icon: Icons.check_circle_outline, color: AppColors.success),
+                StatCard(title: '服务器总数', value: '${_stats?['totalServers'] ?? _stats?['total_servers'] ?? 0}', icon: Icons.dns, color: AppColors.warning, subtitle: '在线 ${_stats?['onlineServers'] ?? _stats?['online_servers'] ?? 0} 台'),
+                StatCard(title: '部署总数', value: '${_stats?['totalDeploys'] ?? _stats?['pending_tickets'] ?? 0}', icon: Icons.cloud_upload, color: AppColors.info),
               ],
             );
           }),
@@ -85,7 +107,7 @@ class _SaasDashboardPageState extends State<SaasDashboardPage> {
                     DataCell(Text(t['enterprise_id'] ?? '', style: const TextStyle(fontWeight: FontWeight.w500))),
                     DataCell(Text(t['name'] ?? '')),
                     DataCell(Text(t['contact_person'] ?? '')),
-                    DataCell(Text(t['server_ip'] ?? '')),
+                    DataCell(Text(t['server_ip'] ?? t['ip_address'] ?? '')),
                     DataCell(_buildStatusChip(t['status'] ?? '')),
                   ])).toList(),
                 ),
@@ -140,7 +162,7 @@ class _SaasDashboardPageState extends State<SaasDashboardPage> {
           Container(width: 8, height: 8, decoration: BoxDecoration(color: isOnline ? AppColors.success : AppColors.offline, shape: BoxShape.circle)),
           const SizedBox(width: 6),
           Expanded(child: Text(server['name'] ?? '', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis)),
-          Text(server['ip'] ?? '', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+          Text(server['ip_address'] ?? server['ip'] ?? '', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
         ]),
         const SizedBox(height: 8),
         Row(children: [

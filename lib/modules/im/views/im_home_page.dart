@@ -34,7 +34,9 @@ class _ImHomePageState extends State<ImHomePage> {
     final res = await ApiService.getConversations();
     if (res.isSuccess && res.data != null) {
       int total = 0;
-      for (var c in (res.data['conversations'] as List? ?? [])) {
+      final rawData = res.data;
+      final convList = rawData is List ? rawData : (rawData is Map ? (rawData['conversations'] ?? rawData['list'] ?? []) : []);
+      for (var c in (convList as List? ?? [])) {
         total += (c['unread_count'] as int? ?? 0);
       }
       if (mounted) setState(() => _totalUnread = total);

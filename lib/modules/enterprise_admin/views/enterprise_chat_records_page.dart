@@ -10,130 +10,222 @@ class EnterpriseChatRecordsPage extends StatefulWidget {
 }
 
 class _EnterpriseChatRecordsPageState extends State<EnterpriseChatRecordsPage> {
-  List<Map<String, dynamic>> _records = [];
-  List<Map<String, dynamic>> _employees = [];
+  List<Map<String, dynamic>> _conversations = [];
+  List<Map<String, dynamic>> _messages = [];
   bool _isLoading = true;
+  bool _isLoadingMessages = false;
   String _searchQuery = '';
-  String _selectedUser = '全部用户';
+  String? _selectedConvId;
+  String _selectedConvName = '';
 
   @override
   void initState() {
     super.initState();
-    _loadData();
+    _loadConversations();
   }
 
-  Future<void> _loadData() async {
-    final recordsRes = await ApiService.enterpriseGetChatRecords();
-    final empRes = await ApiService.enterpriseGetEmployees();
+  Future<void> _loadConversations() async {
+    final res = await ApiService.enterpriseGetChatRecords(keyword: _searchQuery.isNotEmpty ? _searchQuery : null);
     if (mounted) {
       setState(() {
         _isLoading = false;
-        if (recordsRes.isSuccess) _records = List<Map<String, dynamic>>.from(recordsRes.data?['records'] ?? []);
-        if (empRes.isSuccess) _employees = List<Map<String, dynamic>>.from(empRes.data?['employees'] ?? []);
+        if (res.isSuccess && res.data != null) {
+          final d = res.data;
+          if (d is Map) {
+            _conversations = List<Map<String, dynamic>>.from(d['list'] ?? d['conversations'] ?? []);
+          } else if (d is List) {
+            _conversations = List<Map<String, dynamic>>.from(d);
+          }
+        }
       });
     }
   }
 
-  List<Map<String, dynamic>> get _filteredRecords {
-    var list = _records;
-    if (_searchQuery.isNotEmpty) {
-      list = list.where((r) => (r['content'] ?? '').toString().contains(_searchQuery) || (r['sender_name'] ?? '').toString().contains(_searchQuery)).toList();
+  Future<void> _loadMessages(String convId) async {
+    setState(() => _isLoadingMessages = true);
+    final res = await ApiService.adminChatMessages(convId);
+    if (mounted) {
+      setState(() {
+        _isLoadingMessages = false;
+        if (res.isSuccess && res.data != null) {
+          final d = res.data;
+          if (d is Map) {
+            _messages = List<Map<String, dynamic>>.from(d['list'] ?? d['messages'] ?? []);
+          } else if (d is List) {
+            _messages = List<Map<String, dynamic>>.from(d);
+          }
+        }
+      });
     }
-    if (_selectedUser != '全部用户') {
-      list = list.where((r) => r['sender_name'] == _selectedUser || r['receiver_name'] == _selectedUser).toList();
-    }
-    return list;
   }
 
   @override
   Widget build(BuildContext context) {
     if (_isLoading) return const Center(child: CircularProgressIndicator());
-    final records = _filteredRecords;
 
-    return SingleChildScrollView(
+    return Padding(
       padding: const EdgeInsets.all(24),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // 搜索和筛选
-        Wrap(spacing: 12, runSpacing: 12, crossAxisAlignment: WrapCrossAlignment.center, children: [
-          SizedBox(width: 300, child: TextField(
-            decoration: InputDecoration(hintText: '搜索消息内容或发送者...', prefixIcon: const Icon(Icons.search, size: 20), contentPadding: const EdgeInsets.symmetric(vertical: 10), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-            onChanged: (v) => setState(() => _searchQuery = v),
-          )),
-          Container(padding: const EdgeInsets.symmetric(horizontal: 12), decoration: BoxDecoration(border: Border.all(color: AppColors.border), borderRadius: BorderRadius.circular(8)),
-            child: DropdownButtonHideUnderline(child: DropdownButton<String>(
-              value: _selectedUser,
-              items: ['全部用户', ..._employees.map((e) => e['name'] as String? ?? '')].map((n) => DropdownMenuItem(value: n, child: Text(n, style: const TextStyle(fontSize: 14)))).toList(),
-              onChanged: (v) => setState(() => _selectedUser = v ?? '全部用户'),
-            ))),
-          OutlinedButton.icon(onPressed: _loadData, icon: const Icon(Icons.refresh, size: 18), label: const Text('刷新')),
-        ]),
-        const SizedBox(height: 20),
-        // 聊天记录列表
-        Container(
-          decoration: BoxDecoration(color: AppColors.cardBg, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.border.withValues(alpha: 0.5))),
-          child: records.isEmpty
-              ? Padding(padding: const EdgeInsets.all(48), child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.chat_bubble_outline, size: 64, color: Colors.grey.shade300),
-                  const SizedBox(height: 16),
-                  Text('暂无聊天记录', style: TextStyle(color: Colors.grey.shade500, fontSize: 16)),
-                ])))
-              : SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(
-                  headingRowColor: WidgetStateProperty.all(AppColors.background),
-                  columns: const [
-                    DataColumn(label: Text('发送者', style: TextStyle(fontWeight: FontWeight.w600))),
-                    DataColumn(label: Text('接收者', style: TextStyle(fontWeight: FontWeight.w600))),
-                    DataColumn(label: Text('消息类型', style: TextStyle(fontWeight: FontWeight.w600))),
-                    DataColumn(label: Text('消息内容', style: TextStyle(fontWeight: FontWeight.w600))),
-                    DataColumn(label: Text('发送时间', style: TextStyle(fontWeight: FontWeight.w600))),
-                    DataColumn(label: Text('状态', style: TextStyle(fontWeight: FontWeight.w600))),
-                  ],
-                  rows: records.map((r) => DataRow(cells: [
-                    DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
-                      CircleAvatar(radius: 14, backgroundColor: AppColors.primary.withValues(alpha: 0.15), child: Text((r['sender_name'] ?? '?')[0], style: const TextStyle(fontSize: 12, color: AppColors.primary))),
-                      const SizedBox(width: 8), Text(r['sender_name'] ?? ''),
-                    ])),
-                    DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
-                      CircleAvatar(radius: 14, backgroundColor: AppColors.info.withValues(alpha: 0.15), child: Text((r['receiver_name'] ?? '?')[0], style: const TextStyle(fontSize: 12, color: AppColors.info))),
-                      const SizedBox(width: 8), Text(r['receiver_name'] ?? ''),
-                    ])),
-                    DataCell(_buildMsgTypeChip(r['msg_type'] ?? 'text')),
-                    DataCell(ConstrainedBox(constraints: const BoxConstraints(maxWidth: 300), child: Text(r['content'] ?? '', overflow: TextOverflow.ellipsis))),
-                    DataCell(Text(_formatTime(r['created_at'] ?? ''), style: const TextStyle(fontSize: 12, color: AppColors.textSecondary))),
-                    DataCell(_buildStatusChip(r['is_read'] == 1)),
-                  ])).toList(),
-                )),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 左侧：会话列表
+          SizedBox(
+            width: 360,
+            child: Container(
+              decoration: BoxDecoration(color: AppColors.cardBg, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.border.withValues(alpha: 0.5))),
+              child: Column(children: [
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: TextField(
+                    decoration: InputDecoration(hintText: '搜索会话...', prefixIcon: const Icon(Icons.search, size: 20), contentPadding: const EdgeInsets.symmetric(vertical: 10), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
+                    onChanged: (v) { _searchQuery = v; _loadConversations(); },
+                  ),
+                ),
+                Expanded(
+                  child: _conversations.isEmpty
+                      ? Center(child: Text('暂无会话记录', style: TextStyle(color: Colors.grey.shade500)))
+                      : ListView.builder(
+                          itemCount: _conversations.length,
+                          itemBuilder: (_, i) {
+                            final c = _conversations[i];
+                            final isSelected = c['id'] == _selectedConvId;
+                            final name = c['name'] ?? '私聊';
+                            final type = c['type'] ?? 'private';
+                            final msgCount = c['message_count'] ?? 0;
+                            final memberCount = c['member_count'] ?? 0;
+                            final lastMsg = c['last_message'] ?? '';
+                            // 获取成员名称列表
+                            String displayName = name;
+                            if (type == 'private' && c['members'] != null) {
+                              final members = List<Map<String, dynamic>>.from(c['members'] ?? []);
+                              displayName = members.map((m) => m['nickname'] ?? m['username'] ?? '').join(' & ');
+                            }
+                            return Container(
+                              color: isSelected ? AppColors.primary.withValues(alpha: 0.08) : null,
+                              child: ListTile(
+                                leading: CircleAvatar(
+                                  radius: 20,
+                                  backgroundColor: (type == 'group' ? AppColors.info : AppColors.primary).withValues(alpha: 0.15),
+                                  child: Icon(type == 'group' ? Icons.group : Icons.person, color: type == 'group' ? AppColors.info : AppColors.primary, size: 20),
+                                ),
+                                title: Text(displayName, style: TextStyle(fontSize: 14, fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500)),
+                                subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  if (lastMsg.isNotEmpty) Text(lastMsg, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary), maxLines: 1, overflow: TextOverflow.ellipsis),
+                                  Text('$memberCount 人 | $msgCount 条消息', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                                ]),
+                                onTap: () {
+                                  setState(() { _selectedConvId = c['id']; _selectedConvName = displayName; });
+                                  _loadMessages(c['id']);
+                                },
+                              ),
+                            );
+                          },
+                        ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Text('共 ${_conversations.length} 个会话', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                ),
+              ]),
+            ),
+          ),
+          const SizedBox(width: 16),
+          // 右侧：消息详情
+          Expanded(
+            child: Container(
+              decoration: BoxDecoration(color: AppColors.cardBg, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.border.withValues(alpha: 0.5))),
+              child: _selectedConvId == null
+                  ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.chat_bubble_outline, size: 64, color: Colors.grey.shade300),
+                      const SizedBox(height: 16),
+                      Text('选择左侧会话查看聊天记录', style: TextStyle(color: Colors.grey.shade500, fontSize: 16)),
+                    ]))
+                  : Column(children: [
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(border: Border(bottom: BorderSide(color: AppColors.border.withValues(alpha: 0.5)))),
+                        child: Row(children: [
+                          Text(_selectedConvName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                          const Spacer(),
+                          Text('${_messages.length} 条消息', style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+                        ]),
+                      ),
+                      Expanded(
+                        child: _isLoadingMessages
+                            ? const Center(child: CircularProgressIndicator())
+                            : _messages.isEmpty
+                                ? Center(child: Text('暂无消息', style: TextStyle(color: Colors.grey.shade500)))
+                                : ListView.builder(
+                                    padding: const EdgeInsets.all(16),
+                                    itemCount: _messages.length,
+                                    itemBuilder: (_, i) => _buildMessageItem(_messages[i]),
+                                  ),
+                      ),
+                    ]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMessageItem(Map<String, dynamic> msg) {
+    final senderName = msg['sender_name'] ?? '';
+    final content = msg['content'] ?? '';
+    final type = msg['type'] ?? 'text';
+    final time = msg['created_at'] ?? '';
+    final isRecalled = msg['is_recalled'] == 1;
+    String timeStr = '';
+    try {
+      final dt = DateTime.parse(time);
+      timeStr = '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    } catch (_) {}
+
+    if (isRecalled) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Center(child: Text('$senderName 撤回了一条消息', style: TextStyle(fontSize: 12, color: Colors.grey.shade500))),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        CircleAvatar(
+          radius: 16,
+          backgroundColor: AppColors.primary.withValues(alpha: 0.15),
+          child: Text(senderName.isNotEmpty ? senderName[0] : '?', style: const TextStyle(fontSize: 12, color: AppColors.primary, fontWeight: FontWeight.w600)),
         ),
-        const SizedBox(height: 16),
-        Text('共 ${records.length} 条记录', style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Text(senderName, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            const SizedBox(width: 8),
+            Text(timeStr, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+          ]),
+          const SizedBox(height: 4),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(color: AppColors.background, borderRadius: BorderRadius.circular(8)),
+            child: type == 'text'
+                ? Text(content, style: const TextStyle(fontSize: 14))
+                : Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(_getTypeIcon(type), size: 16, color: AppColors.textSecondary),
+                    const SizedBox(width: 6),
+                    Text('[$type] $content', style: const TextStyle(fontSize: 14, color: AppColors.textSecondary)),
+                  ]),
+          ),
+        ])),
       ]),
     );
   }
 
-  Widget _buildMsgTypeChip(String type) {
-    IconData icon; String text; Color color;
+  IconData _getTypeIcon(String type) {
     switch (type) {
-      case 'image': icon = Icons.image; text = '图片'; color = AppColors.success;
-      case 'file': icon = Icons.attach_file; text = '文件'; color = AppColors.warning;
-      case 'voice': icon = Icons.mic; text = '语音'; color = AppColors.info;
-      default: icon = Icons.text_fields; text = '文本'; color = AppColors.primary;
+      case 'image': return Icons.image;
+      case 'file': return Icons.attach_file;
+      case 'voice': return Icons.mic;
+      default: return Icons.text_fields;
     }
-    return Row(mainAxisSize: MainAxisSize.min, children: [
-      Icon(icon, size: 14, color: color), const SizedBox(width: 4),
-      Text(text, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w500)),
-    ]);
-  }
-
-  Widget _buildStatusChip(bool isRead) {
-    return Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(color: (isRead ? AppColors.success : AppColors.warning).withValues(alpha: 0.1), borderRadius: BorderRadius.circular(10)),
-      child: Text(isRead ? '已读' : '未读', style: TextStyle(fontSize: 11, color: isRead ? AppColors.success : AppColors.warning, fontWeight: FontWeight.w600)));
-  }
-
-  String _formatTime(String isoTime) {
-    if (isoTime.isEmpty) return '';
-    try {
-      final dt = DateTime.parse(isoTime);
-      return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-    } catch (_) { return isoTime; }
   }
 }

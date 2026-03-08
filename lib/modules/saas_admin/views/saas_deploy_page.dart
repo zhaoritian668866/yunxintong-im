@@ -34,7 +34,14 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
     if (mounted) {
       setState(() {
         _isLoadingTenants = false;
-        if (res.isSuccess) _tenants = List<Map<String, dynamic>>.from(res.data?['tenants'] ?? []);
+        if (res.isSuccess) {
+          final tData = res.data;
+          if (tData is Map) {
+            _tenants = List<Map<String, dynamic>>.from(tData['list'] ?? tData['tenants'] ?? []);
+          } else if (tData is List) {
+            _tenants = List<Map<String, dynamic>>.from(tData);
+          }
+        }
       });
     }
   }

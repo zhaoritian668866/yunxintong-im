@@ -24,7 +24,14 @@ class _EnterpriseDepartmentPageState extends State<EnterpriseDepartmentPage> {
     if (mounted) {
       setState(() {
         _isLoading = false;
-        if (res.isSuccess) _departments = List<Map<String, dynamic>>.from(res.data?['departments'] ?? []);
+        if (res.isSuccess) {
+          final dData = res.data;
+          if (dData is List) {
+            _departments = List<Map<String, dynamic>>.from(dData);
+          } else if (dData is Map) {
+            _departments = List<Map<String, dynamic>>.from(dData['departments'] ?? dData['list'] ?? []);
+          }
+        }
       });
     }
   }
@@ -92,7 +99,7 @@ class _EnterpriseDepartmentPageState extends State<EnterpriseDepartmentPage> {
         Row(children: [
           Icon(Icons.people, size: 16, color: color),
           const SizedBox(width: 6),
-          Text('${dept['member_count'] ?? 0} 名成员', style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+          Text('${dept['employee_count'] ?? dept['member_count'] ?? 0} 名成员', style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
         ]),
       ]),
     );

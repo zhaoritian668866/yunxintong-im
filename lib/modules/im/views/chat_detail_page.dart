@@ -38,8 +38,13 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
       setState(() {
         _isLoading = false;
         if (res.isSuccess && res.data != null) {
-          _messages = List<Map<String, dynamic>>.from(res.data['messages'] ?? []);
-          _messages = _messages.reversed.toList();
+          // 后端返回 { total, list: [...] }，消息已按时间正序排列
+          final rawData = res.data;
+          if (rawData is Map) {
+            _messages = List<Map<String, dynamic>>.from(rawData['list'] ?? rawData['messages'] ?? []);
+          } else if (rawData is List) {
+            _messages = List<Map<String, dynamic>>.from(rawData);
+          }
         }
       });
       _scrollToBottom();

@@ -10,11 +10,11 @@ import 'modules/enterprise_admin/views/enterprise_admin_page.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await ApiService.loadSession();
-  // 企业管理后台部署在企业服务器上，API同域访问
+  // 企业管理后台部署在企业服务器上，API同域访问（直连模式）
   if (kIsWeb) {
-    ApiService.enterpriseApiUrl = Uri.base.origin + '/api';
+    ApiService.enterpriseDirectUrl = Uri.base.origin + '/api';
   } else {
-    ApiService.enterpriseApiUrl = 'http://localhost:4001/api';
+    ApiService.enterpriseDirectUrl = 'http://localhost:4001/api';
   }
   runApp(
     ChangeNotifierProvider(

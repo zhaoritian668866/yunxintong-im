@@ -12,14 +12,6 @@ class _EnterpriseIdPageState extends State<EnterpriseIdPage> {
   final _controller = TextEditingController();
   bool _isLoading = false;
   String? _errorMsg;
-  String? _mode;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final args = ModalRoute.of(context)?.settings.arguments;
-    if (args is String && args == 'admin') _mode = 'admin';
-  }
 
   Future<void> _verifyEnterprise() async {
     final eid = _controller.text.trim().toUpperCase();
@@ -31,16 +23,13 @@ class _EnterpriseIdPageState extends State<EnterpriseIdPage> {
     final res = await ApiService.resolveEnterprise(eid);
     setState(() => _isLoading = false);
     if (res.isSuccess && res.data != null) {
-      ApiService.enterpriseApiUrl = res.data['api_url'];
+      // 只设置企业ID，API地址通过代理路径自动计算
+      ApiService.enterpriseId = eid;
       ApiService.enterpriseWsUrl = res.data['ws_url'] ?? '';
       ApiService.enterpriseName = res.data['name'] ?? '';
       await ApiService.saveSession();
       if (mounted) {
-        if (_mode == 'admin') {
-          Navigator.pushReplacementNamed(context, '/enterprise-login');
-        } else {
-          Navigator.pushReplacementNamed(context, '/user-login');
-        }
+        Navigator.pushReplacementNamed(context, '/user-login');
       }
     } else {
       setState(() => _errorMsg = res.message);
@@ -49,12 +38,10 @@ class _EnterpriseIdPageState extends State<EnterpriseIdPage> {
 
   @override
   Widget build(BuildContext context) {
-    final isAdmin = _mode == 'admin';
-    final color = isAdmin ? Colors.green : Colors.blue;
     return Scaffold(
       body: Container(
         decoration: BoxDecoration(
-          gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [color.shade700, color.shade400]),
+          gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Colors.blue.shade700, Colors.blue.shade400]),
         ),
         child: SafeArea(
           child: Center(
@@ -63,9 +50,9 @@ class _EnterpriseIdPageState extends State<EnterpriseIdPage> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(isAdmin ? Icons.business_rounded : Icons.domain_rounded, size: 64, color: Colors.white),
+                  const Icon(Icons.domain_rounded, size: 64, color: Colors.white),
                   const SizedBox(height: 16),
-                  Text(isAdmin ? '企业管理后台' : '进入企业空间', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white)),
+                  const Text('进入企业空间', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white)),
                   const SizedBox(height: 8),
                   Text('请输入企业ID以连接企业服务器', style: TextStyle(fontSize: 14, color: Colors.white.withValues(alpha: 0.8))),
                   const SizedBox(height: 40),
@@ -101,7 +88,7 @@ class _EnterpriseIdPageState extends State<EnterpriseIdPage> {
                             child: ElevatedButton(
                               onPressed: _isLoading ? null : _verifyEnterprise,
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: color.shade600,
+                                backgroundColor: Colors.blue.shade600,
                                 foregroundColor: Colors.white,
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                               ),
@@ -113,11 +100,6 @@ class _EnterpriseIdPageState extends State<EnterpriseIdPage> {
                         ],
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 24),
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('返回首页', style: TextStyle(color: Colors.white)),
                   ),
                 ],
               ),

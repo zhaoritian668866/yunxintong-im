@@ -15,17 +15,34 @@ class ApiResponse {
 }
 
 class ApiService {
-  // SaaS平台API地址 - 动态获取当前域名
+  // SaaS平台API地址 - 动态获取当前域名（同域）
   static String get saasBaseUrl {
     if (kIsWeb) {
-      // Web端：使用当前页面的origin作为API基础地址
       return Uri.base.origin + '/api';
     }
-    return 'http://localhost:3000/api';
+    return 'http://localhost:8088/api';
   }
 
-  // 企业API地址（动态，用户输入企业ID后获取）
-  static String enterpriseApiUrl = '';
+  // 企业ID（用于代理路径）
+  static String _enterpriseId = '';
+  static String get enterpriseId => _enterpriseId;
+  static set enterpriseId(String v) => _enterpriseId = v;
+
+  // 企业API地址 - 通过代理路径访问（同域，无跨域问题）
+  // 格式: {saasBaseUrl}/proxy/{enterprise_id}
+  static String get enterpriseApiUrl {
+    if (_enterpriseId.isEmpty) return '';
+    if (kIsWeb) {
+      return Uri.base.origin + '/api/proxy/$_enterpriseId';
+    }
+    return 'http://localhost:8088/api/proxy/$_enterpriseId';
+  }
+
+  // 企业直连地址（企业管理后台部署在企业服务器上时使用）
+  static String _enterpriseDirectUrl = '';
+  static String get enterpriseDirectUrl => _enterpriseDirectUrl;
+  static set enterpriseDirectUrl(String v) => _enterpriseDirectUrl = v;
+
   static String enterpriseWsUrl = '';
   static String enterpriseName = '';
 
@@ -44,7 +61,8 @@ class ApiService {
   // 持久化存储
   static Future<void> saveSession() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('enterprise_api_url', enterpriseApiUrl);
+    await prefs.setString('enterprise_id', _enterpriseId);
+    await prefs.setString('enterprise_direct_url', _enterpriseDirectUrl);
     await prefs.setString('enterprise_ws_url', enterpriseWsUrl);
     await prefs.setString('enterprise_name', enterpriseName);
     await prefs.setString('user_token', _userToken);
@@ -54,7 +72,8 @@ class ApiService {
 
   static Future<void> loadSession() async {
     final prefs = await SharedPreferences.getInstance();
-    enterpriseApiUrl = prefs.getString('enterprise_api_url') ?? '';
+    _enterpriseId = prefs.getString('enterprise_id') ?? '';
+    _enterpriseDirectUrl = prefs.getString('enterprise_direct_url') ?? '';
     enterpriseWsUrl = prefs.getString('enterprise_ws_url') ?? '';
     enterpriseName = prefs.getString('enterprise_name') ?? '';
     _userToken = prefs.getString('user_token') ?? '';
@@ -64,11 +83,13 @@ class ApiService {
 
   static Future<void> clearUserSession() async {
     _userToken = '';
-    enterpriseApiUrl = '';
+    _enterpriseId = '';
+    _enterpriseDirectUrl = '';
     enterpriseWsUrl = '';
     enterpriseName = '';
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('enterprise_api_url');
+    await prefs.remove('enterprise_id');
+    await prefs.remove('enterprise_direct_url');
     await prefs.remove('enterprise_ws_url');
     await prefs.remove('enterprise_name');
     await prefs.remove('user_token');
@@ -114,10 +135,18 @@ class ApiService {
     }
   }
 
+  // 获取企业API基础URL（代理模式或直连模式）
+  static String get _entApiBase {
+    // 如果有直连地址（企业管理后台场景），优先使用
+    if (_enterpriseDirectUrl.isNotEmpty) return _enterpriseDirectUrl;
+    // 否则使用代理模式
+    return enterpriseApiUrl;
+  }
+
   // ==================== SaaS平台接口 ====================
 
-  static Future<ApiResponse> resolveEnterprise(String enterpriseId) async {
-    return _request('POST', '$saasBaseUrl/auth/resolve', body: {'enterprise_id': enterpriseId});
+  static Future<ApiResponse> resolveEnterprise(String eid) async {
+    return _request('POST', '$saasBaseUrl/auth/resolve', body: {'enterprise_id': eid});
   }
 
   static Future<ApiResponse> saasLogin(String username, String password) async {
@@ -185,131 +214,131 @@ class ApiService {
     return _request('GET', '$saasBaseUrl/saas/servers/available', token: _saasToken);
   }
 
-  // ==================== 企业服务器接口（用户端） ====================
+  // ==================== 企业服务器接口（用户端 - 通过代理） ====================
 
   static Future<ApiResponse> userRegister(String username, String password, {String? nickname, String? phone}) async {
-    return _request('POST', '$enterpriseApiUrl/auth/register', body: {'username': username, 'password': password, 'nickname': nickname, 'phone': phone});
+    return _request('POST', '$_entApiBase/auth/register', body: {'username': username, 'password': password, 'nickname': nickname, 'phone': phone});
   }
 
   static Future<ApiResponse> userLogin(String username, String password) async {
-    return _request('POST', '$enterpriseApiUrl/auth/login', body: {'username': username, 'password': password});
+    return _request('POST', '$_entApiBase/auth/login', body: {'username': username, 'password': password});
   }
 
   static Future<ApiResponse> userProfile() async {
-    return _request('GET', '$enterpriseApiUrl/auth/profile', token: _userToken);
+    return _request('GET', '$_entApiBase/auth/profile', token: _userToken);
   }
 
   static Future<ApiResponse> updateProfile(Map<String, dynamic> data) async {
-    return _request('PUT', '$enterpriseApiUrl/auth/profile', body: data, token: _userToken);
+    return _request('PUT', '$_entApiBase/auth/profile', body: data, token: _userToken);
   }
 
   static Future<ApiResponse> getConversations() async {
-    return _request('GET', '$enterpriseApiUrl/im/conversations', token: _userToken);
+    return _request('GET', '$_entApiBase/im/conversations', token: _userToken);
   }
 
   static Future<ApiResponse> getMessages(String conversationId, {int page = 1}) async {
-    return _request('GET', '$enterpriseApiUrl/im/messages/$conversationId?page=$page', token: _userToken);
+    return _request('GET', '$_entApiBase/im/messages/$conversationId?page=$page', token: _userToken);
   }
 
   static Future<ApiResponse> sendMessage(String conversationId, String content, {String type = 'text'}) async {
-    return _request('POST', '$enterpriseApiUrl/im/messages', body: {'conversation_id': conversationId, 'content': content, 'type': type}, token: _userToken);
+    return _request('POST', '$_entApiBase/im/messages', body: {'conversation_id': conversationId, 'content': content, 'type': type}, token: _userToken);
   }
 
   static Future<ApiResponse> recallMessage(String messageId) async {
-    return _request('PUT', '$enterpriseApiUrl/im/messages/$messageId/recall', token: _userToken);
+    return _request('PUT', '$_entApiBase/im/messages/$messageId/recall', token: _userToken);
   }
 
   static Future<ApiResponse> getContacts() async {
-    return _request('GET', '$enterpriseApiUrl/im/contacts', token: _userToken);
+    return _request('GET', '$_entApiBase/im/contacts', token: _userToken);
   }
 
   static Future<ApiResponse> createConversation(String type, {String? name, List<String>? memberIds}) async {
-    return _request('POST', '$enterpriseApiUrl/im/conversations', body: {'type': type, 'name': name, 'member_ids': memberIds}, token: _userToken);
+    return _request('POST', '$_entApiBase/im/conversations', body: {'type': type, 'name': name, 'member_ids': memberIds}, token: _userToken);
   }
 
   static Future<ApiResponse> pinConversation(String id, bool pinned) async {
-    return _request('PUT', '$enterpriseApiUrl/im/conversations/$id/pin', body: {'is_pinned': pinned}, token: _userToken);
+    return _request('PUT', '$_entApiBase/im/conversations/$id/pin', body: {'is_pinned': pinned}, token: _userToken);
   }
 
   static Future<ApiResponse> muteConversation(String id, bool muted) async {
-    return _request('PUT', '$enterpriseApiUrl/im/conversations/$id/mute', body: {'is_muted': muted}, token: _userToken);
+    return _request('PUT', '$_entApiBase/im/conversations/$id/mute', body: {'is_muted': muted}, token: _userToken);
   }
 
   // ==================== 企业管理后台接口 ====================
 
   static Future<ApiResponse> adminLogin(String username, String password) async {
-    return _request('POST', '$enterpriseApiUrl/admin/login', body: {'username': username, 'password': password});
+    return _request('POST', '$_entApiBase/admin/login', body: {'username': username, 'password': password});
   }
 
   static Future<ApiResponse> adminDashboard() async {
-    return _request('GET', '$enterpriseApiUrl/admin/dashboard', token: _adminToken);
+    return _request('GET', '$_entApiBase/admin/dashboard', token: _adminToken);
   }
 
   static Future<ApiResponse> adminEmployees({int page = 1, String? keyword, String? departmentId}) async {
-    var url = '$enterpriseApiUrl/admin/employees?page=$page';
+    var url = '$_entApiBase/admin/employees?page=$page';
     if (keyword != null && keyword.isNotEmpty) url += '&keyword=$keyword';
     if (departmentId != null) url += '&department_id=$departmentId';
     return _request('GET', url, token: _adminToken);
   }
 
   static Future<ApiResponse> adminCreateEmployee(Map<String, dynamic> data) async {
-    return _request('POST', '$enterpriseApiUrl/admin/employees', body: data, token: _adminToken);
+    return _request('POST', '$_entApiBase/admin/employees', body: data, token: _adminToken);
   }
 
   static Future<ApiResponse> adminUpdateEmployee(String id, Map<String, dynamic> data) async {
-    return _request('PUT', '$enterpriseApiUrl/admin/employees/$id', body: data, token: _adminToken);
+    return _request('PUT', '$_entApiBase/admin/employees/$id', body: data, token: _adminToken);
   }
 
   static Future<ApiResponse> adminDeleteEmployee(String id) async {
-    return _request('DELETE', '$enterpriseApiUrl/admin/employees/$id', token: _adminToken);
+    return _request('DELETE', '$_entApiBase/admin/employees/$id', token: _adminToken);
   }
 
   static Future<ApiResponse> adminDepartments() async {
-    return _request('GET', '$enterpriseApiUrl/admin/departments', token: _adminToken);
+    return _request('GET', '$_entApiBase/admin/departments', token: _adminToken);
   }
 
   static Future<ApiResponse> adminCreateDepartment(Map<String, dynamic> data) async {
-    return _request('POST', '$enterpriseApiUrl/admin/departments', body: data, token: _adminToken);
+    return _request('POST', '$_entApiBase/admin/departments', body: data, token: _adminToken);
   }
 
   static Future<ApiResponse> adminUpdateDepartment(String id, Map<String, dynamic> data) async {
-    return _request('PUT', '$enterpriseApiUrl/admin/departments/$id', body: data, token: _adminToken);
+    return _request('PUT', '$_entApiBase/admin/departments/$id', body: data, token: _adminToken);
   }
 
   static Future<ApiResponse> adminDeleteDepartment(String id) async {
-    return _request('DELETE', '$enterpriseApiUrl/admin/departments/$id', token: _adminToken);
+    return _request('DELETE', '$_entApiBase/admin/departments/$id', token: _adminToken);
   }
 
   static Future<ApiResponse> adminSettings() async {
-    return _request('GET', '$enterpriseApiUrl/admin/settings', token: _adminToken);
+    return _request('GET', '$_entApiBase/admin/settings', token: _adminToken);
   }
 
   static Future<ApiResponse> adminUpdateSettings(Map<String, dynamic> data) async {
-    return _request('PUT', '$enterpriseApiUrl/admin/settings', body: data, token: _adminToken);
+    return _request('PUT', '$_entApiBase/admin/settings', body: data, token: _adminToken);
   }
 
   static Future<ApiResponse> adminChatConversations({String? type, String? keyword, int page = 1}) async {
-    var url = '$enterpriseApiUrl/admin/chat-records/conversations?page=$page';
+    var url = '$_entApiBase/admin/chat-records/conversations?page=$page';
     if (type != null) url += '&type=$type';
     if (keyword != null && keyword.isNotEmpty) url += '&keyword=$keyword';
     return _request('GET', url, token: _adminToken);
   }
 
   static Future<ApiResponse> adminChatMessages(String conversationId, {int page = 1, String? keyword}) async {
-    var url = '$enterpriseApiUrl/admin/chat-records/messages/$conversationId?page=$page';
+    var url = '$_entApiBase/admin/chat-records/messages/$conversationId?page=$page';
     if (keyword != null && keyword.isNotEmpty) url += '&keyword=$keyword';
     return _request('GET', url, token: _adminToken);
   }
 
   static Future<ApiResponse> adminSearchMessages({String? keyword, String? senderId, int page = 1}) async {
-    var url = '$enterpriseApiUrl/admin/chat-records/search?page=$page';
+    var url = '$_entApiBase/admin/chat-records/search?page=$page';
     if (keyword != null && keyword.isNotEmpty) url += '&keyword=$keyword';
     if (senderId != null) url += '&sender_id=$senderId';
     return _request('GET', url, token: _adminToken);
   }
 
   static Future<ApiResponse> adminUserMessages(String userId, {int page = 1, String? keyword}) async {
-    var url = '$enterpriseApiUrl/admin/chat-records/user/$userId?page=$page';
+    var url = '$_entApiBase/admin/chat-records/user/$userId?page=$page';
     if (keyword != null && keyword.isNotEmpty) url += '&keyword=$keyword';
     return _request('GET', url, token: _adminToken);
   }
@@ -334,5 +363,5 @@ class ApiService {
   static Future<ApiResponse> enterpriseAddDepartment(Map<String, dynamic> data) => adminCreateDepartment(data);
   static Future<ApiResponse> enterpriseUpdateDepartment(dynamic id, Map<String, dynamic> data) => adminUpdateDepartment(id.toString(), data);
   static Future<ApiResponse> enterpriseDeleteDepartment(dynamic id) => adminDeleteDepartment(id.toString());
-  static Future<ApiResponse> enterpriseGetChatRecords({String? keyword, String? senderId, int page = 1}) => adminSearchMessages(keyword: keyword, senderId: senderId, page: page);
+  static Future<ApiResponse> enterpriseGetChatRecords({String? keyword, String? senderId, int page = 1, String? type}) => adminChatConversations(type: type, keyword: keyword, page: page);
 }

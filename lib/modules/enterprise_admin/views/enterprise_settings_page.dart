@@ -34,15 +34,15 @@ class _EnterpriseSettingsPageState extends State<EnterpriseSettingsPage> {
         _isLoading = false;
         if (res.isSuccess && res.data != null) {
           final s = res.data!;
-          _allowRegister = s['allow_register'] == 1;
-          _requireApproval = s['require_approval'] == 1;
-          _enableFileShare = s['enable_file_share'] == 1;
-          _enableVoiceCall = s['enable_voice_call'] == 1;
-          _enableVideoCall = s['enable_video_call'] == 1;
-          _enableReadReceipt = s['enable_read_receipt'] == 1;
-          _enableMsgRecall = s['enable_msg_recall'] == 1;
-          _recallTimeout = s['recall_timeout'] ?? 2;
-          _maxFileSize = s['max_file_size'] ?? 100;
+          _allowRegister = (s['allow_group_creation'] ?? s['allow_register'] ?? 1) == 1;
+          _requireApproval = (s['require_approval'] ?? 0) == 1;
+          _enableFileShare = (s['allow_file_sharing'] ?? s['enable_file_share'] ?? 1) == 1;
+          _enableVoiceCall = (s['enable_voice_call'] ?? 1) == 1;
+          _enableVideoCall = (s['enable_video_call'] ?? 0) == 1;
+          _enableReadReceipt = (s['enable_read_receipt'] ?? 1) == 1;
+          _enableMsgRecall = (s['enable_msg_recall'] ?? 1) == 1;
+          _recallTimeout = (s['message_recall_timeout'] ?? s['recall_timeout'] ?? 120) is int ? ((s['message_recall_timeout'] ?? s['recall_timeout'] ?? 120) / 60).round() : 2;
+          _maxFileSize = s['max_file_size'] ?? 50;
         }
       });
     }
@@ -50,14 +50,14 @@ class _EnterpriseSettingsPageState extends State<EnterpriseSettingsPage> {
 
   Future<void> _saveSettings() async {
     final res = await ApiService.enterpriseUpdateSettings({
-      'allow_register': _allowRegister ? 1 : 0,
+      'allow_group_creation': _allowRegister ? 1 : 0,
       'require_approval': _requireApproval ? 1 : 0,
-      'enable_file_share': _enableFileShare ? 1 : 0,
+      'allow_file_sharing': _enableFileShare ? 1 : 0,
       'enable_voice_call': _enableVoiceCall ? 1 : 0,
       'enable_video_call': _enableVideoCall ? 1 : 0,
       'enable_read_receipt': _enableReadReceipt ? 1 : 0,
       'enable_msg_recall': _enableMsgRecall ? 1 : 0,
-      'recall_timeout': _recallTimeout,
+      'message_recall_timeout': _recallTimeout * 60,
       'max_file_size': _maxFileSize,
     });
     if (mounted) {

@@ -24,7 +24,14 @@ class _SaasServerPageState extends State<SaasServerPage> {
     if (mounted) {
       setState(() {
         _isLoading = false;
-        if (res.isSuccess) _servers = List<Map<String, dynamic>>.from(res.data?['servers'] ?? []);
+        if (res.isSuccess) {
+          final sData = res.data;
+          if (sData is List) {
+            _servers = List<Map<String, dynamic>>.from(sData);
+          } else if (sData is Map) {
+            _servers = List<Map<String, dynamic>>.from(sData['servers'] ?? sData['list'] ?? []);
+          }
+        }
       });
     }
   }
@@ -75,7 +82,7 @@ class _SaasServerPageState extends State<SaasServerPage> {
           const SizedBox(width: 12),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(server['name'] ?? '', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-            Text(server['ip'] ?? '', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, fontFamily: 'monospace')),
+            Text(server['ip_address'] ?? server['ip'] ?? '', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, fontFamily: 'monospace')),
           ])),
           Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3), decoration: BoxDecoration(color: statusColor.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(10)),
             child: Row(mainAxisSize: MainAxisSize.min, children: [

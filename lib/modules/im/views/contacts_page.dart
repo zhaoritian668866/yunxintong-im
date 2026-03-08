@@ -112,14 +112,17 @@ class _ContactsPageState extends State<ContactsPage> {
   }
 
   Future<void> _startChat(Map<String, dynamic> contact) async {
-    final res = await ApiService.createConversation('single', memberIds: [contact['id']]);
+    final res = await ApiService.createConversation('private', memberIds: [contact['id']]);
     if (res.isSuccess && res.data != null && mounted) {
-      final conv = res.data['conversation'];
-      Navigator.push(context, MaterialPageRoute(builder: (_) => ChatDetailPage(
-        conversationId: conv['id'],
-        conversationName: contact['nickname'] ?? contact['username'] ?? '',
-        conversationType: 'single',
-      )));
+      // 后端直接返回 { id: "xxx" } 或 { id: "xxx", is_existing: true }
+      final convId = res.data is Map ? (res.data['id'] ?? '') : '';
+      if (convId.isNotEmpty) {
+        Navigator.push(context, MaterialPageRoute(builder: (_) => ChatDetailPage(
+          conversationId: convId,
+          conversationName: contact['nickname'] ?? contact['username'] ?? '',
+          conversationType: 'private',
+        )));
+      }
     }
   }
 

@@ -26,7 +26,13 @@ class _ChatListPageState extends State<ChatListPage> {
       setState(() {
         _isLoading = false;
         if (res.isSuccess && res.data != null) {
-          _conversations = List<Map<String, dynamic>>.from(res.data['conversations'] ?? []);
+          // data直接是数组（后端返回格式）
+          final rawData = res.data;
+          if (rawData is List) {
+            _conversations = List<Map<String, dynamic>>.from(rawData);
+          } else if (rawData is Map) {
+            _conversations = List<Map<String, dynamic>>.from(rawData['conversations'] ?? rawData['list'] ?? []);
+          }
         }
       });
     }
@@ -70,7 +76,7 @@ class _ChatListPageState extends State<ChatListPage> {
     final unread = conv['unread_count'] ?? 0;
     final isPinned = conv['is_pinned'] == 1;
     final type = conv['type'] ?? 'single';
-    final time = conv['last_message_time'] ?? '';
+    final time = conv['last_message_at'] ?? conv['last_message_time'] ?? '';
     String timeStr = '';
     if (time.isNotEmpty) {
       try {
@@ -149,7 +155,7 @@ class _ChatListPageState extends State<ChatListPage> {
     showModalBottomSheet(context: context, builder: (ctx) => SafeArea(
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         const Padding(padding: EdgeInsets.all(16), child: Text('发起聊天', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
-        ListTile(leading: const Icon(Icons.person_add), title: const Text('发起单聊'), onTap: () { Navigator.pop(ctx); _startNewChat('single'); }),
+        ListTile(leading: const Icon(Icons.person_add), title: const Text('发起单聊'), onTap: () { Navigator.pop(ctx); _startNewChat('private'); }),
         ListTile(leading: const Icon(Icons.group_add), title: const Text('发起群聊'), onTap: () { Navigator.pop(ctx); _startNewChat('group'); }),
       ]),
     ));
@@ -163,9 +169,9 @@ class _ChatListPageState extends State<ChatListPage> {
     final nameCtrl = TextEditingController(text: type == 'group' ? '新群组' : '');
 
     await showDialog(context: context, builder: (ctx) => StatefulBuilder(builder: (ctx2, setS) => AlertDialog(
-      title: Text(type == 'single' ? '选择联系人' : '创建群聊'),
+      title: Text(type == 'private' ? '选择联系人' : '创建群聊'),
       content: SizedBox(width: double.maxFinite, height: 400, child: Column(children: [
-        if (type == 'group') ...[
+        if (type != 'private') ...[
           TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: '群名称', border: OutlineInputBorder())),
           const SizedBox(height: 12),
         ],
@@ -178,7 +184,7 @@ class _ChatListPageState extends State<ChatListPage> {
               value: isSelected,
               title: Text(c['nickname'] ?? c['username'] ?? ''),
               subtitle: Text(c['position'] ?? '', style: const TextStyle(fontSize: 12)),
-              onChanged: (v) { setS(() { if (v == true) { if (type == 'single') selected.clear(); selected.add(c['id']); } else selected.remove(c['id']); }); },
+              onChanged: (v) { setS(() { if (v == true) { if (type == 'private') selected.clear(); selected.add(c['id']); } else selected.remove(c['id']); }); },
             );
           },
         )),
@@ -187,7 +193,8 @@ class _ChatListPageState extends State<ChatListPage> {
         TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
         ElevatedButton(onPressed: selected.isEmpty ? null : () async {
           Navigator.pop(ctx);
-          final r = await ApiService.createConversation(type, memberIds: selected, name: type == 'group' ? nameCtrl.text : null);
+          final actualType = type == 'private' ? 'private' : type;
+          final r = await ApiService.createConversation(actualType, memberIds: selected, name: type == 'group' ? nameCtrl.text : null);
           if (r.isSuccess) _loadConversations();
         }, child: const Text('确定')),
       ],

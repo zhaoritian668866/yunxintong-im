@@ -28,8 +28,22 @@ class _EnterpriseEmployeePageState extends State<EnterpriseEmployeePage> {
     if (mounted) {
       setState(() {
         _isLoading = false;
-        if (empRes.isSuccess) _employees = List<Map<String, dynamic>>.from(empRes.data?['employees'] ?? []);
-        if (deptRes.isSuccess) _departments = List<Map<String, dynamic>>.from(deptRes.data?['departments'] ?? []);
+        if (empRes.isSuccess) {
+          final eData = empRes.data;
+          if (eData is Map) {
+            _employees = List<Map<String, dynamic>>.from(eData['list'] ?? eData['employees'] ?? []);
+          } else if (eData is List) {
+            _employees = List<Map<String, dynamic>>.from(eData);
+          }
+        }
+        if (deptRes.isSuccess) {
+          final dData = deptRes.data;
+          if (dData is List) {
+            _departments = List<Map<String, dynamic>>.from(dData);
+          } else if (dData is Map) {
+            _departments = List<Map<String, dynamic>>.from(dData['departments'] ?? dData['list'] ?? []);
+          }
+        }
       });
     }
   }
@@ -37,10 +51,10 @@ class _EnterpriseEmployeePageState extends State<EnterpriseEmployeePage> {
   List<Map<String, dynamic>> get _filteredEmployees {
     var list = _employees;
     if (_searchQuery.isNotEmpty) {
-      list = list.where((e) => (e['name'] ?? '').toString().contains(_searchQuery) || (e['employee_no'] ?? '').toString().contains(_searchQuery)).toList();
+      list = list.where((e) => (e['nickname'] ?? e['name'] ?? '').toString().contains(_searchQuery) || (e['username'] ?? e['employee_no'] ?? '').toString().contains(_searchQuery)).toList();
     }
     if (_departmentFilter != '全部部门') {
-      list = list.where((e) => e['department'] == _departmentFilter).toList();
+      list = list.where((e) => (e['department_name'] ?? e['department'] ?? '') == _departmentFilter).toList();
     }
     return list;
   }
@@ -81,14 +95,14 @@ class _EnterpriseEmployeePageState extends State<EnterpriseEmployeePage> {
               DataColumn(label: Text('操作', style: TextStyle(fontWeight: FontWeight.w600))),
             ],
             rows: employees.map((e) {
-              final isOnline = e['is_online'] == 1;
+              final isOnline = e['online_status'] == 'online' || e['is_online'] == 1;
               return DataRow(cells: [
                 DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
-                  CircleAvatar(radius: 16, backgroundColor: AppColors.primary.withValues(alpha: 0.15), child: Text((e['name'] ?? '?')[0], style: const TextStyle(fontSize: 13, color: AppColors.primary, fontWeight: FontWeight.w600))),
-                  const SizedBox(width: 10), Text(e['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w500)),
+                  CircleAvatar(radius: 16, backgroundColor: AppColors.primary.withValues(alpha: 0.15), child: Text((e['nickname'] ?? e['name'] ?? '?')[0], style: const TextStyle(fontSize: 13, color: AppColors.primary, fontWeight: FontWeight.w600))),
+                  const SizedBox(width: 10), Text(e['nickname'] ?? e['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w500)),
                 ])),
-                DataCell(Text(e['employee_no'] ?? '', style: const TextStyle(fontFamily: 'monospace'))),
-                DataCell(Text(e['department'] ?? '')),
+                DataCell(Text(e['username'] ?? e['employee_no'] ?? '', style: const TextStyle(fontFamily: 'monospace'))),
+                DataCell(Text(e['department_name'] ?? e['department'] ?? '')),
                 DataCell(Text(e['position'] ?? '')),
                 DataCell(Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(color: (isOnline ? AppColors.success : AppColors.offline).withValues(alpha: 0.1), borderRadius: BorderRadius.circular(10)),
