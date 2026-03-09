@@ -98,7 +98,7 @@ router.post('/tenants', verifyToken, requireRole('saas_admin'), (req, res) => {
     const existing = db.prepare('SELECT id FROM tenants WHERE enterprise_id = ?').get(eid);
     if (existing) return res.json({ code: 409, message: '企业ID已存在' });
     const tenantId = uuidv4();
-    db.prepare(`INSERT INTO tenants (id, enterprise_id, name, contact_person, contact_phone, contact_email, plan, max_users) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    db.prepare(`INSERT INTO tenants (id, enterprise_id, name, contact_person, contact_phone, contact_email, plan, max_users, status, deploy_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending')`)
       .run(tenantId, eid, name, contact_person || '', contact_phone || '', contact_email || '', plan || 'basic', max_users || 100);
     res.json({ code: 200, message: '创建成功', data: { id: tenantId } });
   } catch (err) {
@@ -119,6 +119,11 @@ router.put('/tenants/:id', verifyToken, requireRole('saas_admin'), (req, res) =>
 
 router.delete('/tenants/:id', verifyToken, requireRole('saas_admin'), (req, res) => {
   try {
+    // 先解绑服务器
+    const tenant = db.prepare('SELECT server_id FROM tenants WHERE id = ?').get(req.params.id);
+    if (tenant && tenant.server_id) {
+      db.prepare('UPDATE servers SET tenant_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(tenant.server_id);
+    }
     db.prepare('DELETE FROM tenants WHERE id = ?').run(req.params.id);
     res.json({ code: 200, message: '删除成功' });
   } catch (err) {
@@ -182,7 +187,8 @@ router.post('/servers/:id/test', verifyToken, requireRole('saas_admin'), (req, r
       host: server.ip_address,
       port: server.ssh_port || 22,
       username: server.ssh_user || 'root',
-      readyTimeout: 10000
+      readyTimeout: 15000,
+      keepaliveInterval: 5000
     };
     if (server.ssh_key) {
       connectConfig.privateKey = server.ssh_key;
@@ -190,23 +196,33 @@ router.post('/servers/:id/test', verifyToken, requireRole('saas_admin'), (req, r
       connectConfig.password = server.ssh_password;
     }
 
+    let responded = false;
     conn.on('ready', () => {
       conn.exec('uname -a && free -h && df -h / | tail -1', (err, stream) => {
-        if (err) { conn.end(); return res.json({ code: 500, message: 'SSH命令执行失败: ' + err.message }); }
+        if (err) { conn.end(); if (!responded) { responded = true; return res.json({ code: 500, message: 'SSH命令执行失败: ' + err.message }); } return; }
         let output = '';
         stream.on('data', (data) => { output += data.toString(); });
         stream.on('close', () => {
           conn.end();
           db.prepare("UPDATE servers SET status='online', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(server.id);
-          res.json({ code: 200, message: 'SSH连接成功', data: { output: output.trim() } });
+          if (!responded) { responded = true; res.json({ code: 200, message: 'SSH连接成功', data: { output: output.trim() } }); }
         });
       });
     });
 
     conn.on('error', (err) => {
       db.prepare("UPDATE servers SET status='offline', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(server.id);
-      res.json({ code: 502, message: 'SSH连接失败: ' + err.message });
+      if (!responded) { responded = true; res.json({ code: 502, message: 'SSH连接失败: ' + err.message }); }
     });
+
+    // 超时保护
+    setTimeout(() => {
+      if (!responded) {
+        responded = true;
+        try { conn.end(); } catch(e) {}
+        res.json({ code: 504, message: 'SSH连接超时，请检查服务器IP、端口和防火墙设置' });
+      }
+    }, 20000);
 
     conn.connect(connectConfig);
   } catch (err) {
@@ -229,21 +245,39 @@ router.get('/deploys', verifyToken, requireRole('saas_admin'), (req, res) => {
   }
 });
 
-// 获取未部署的租户列表
+// 获取待部署的租户列表（包括pending和failed状态，以及需要重新部署的）
 router.get('/tenants/undeployed', verifyToken, requireRole('saas_admin'), (req, res) => {
   try {
-    const tenants = db.prepare("SELECT id, enterprise_id, name FROM tenants WHERE deploy_status != 'deployed'").all();
+    const tenants = db.prepare("SELECT id, enterprise_id, name, plan, max_users, deploy_status FROM tenants WHERE deploy_status != 'deployed' OR deploy_status IS NULL").all();
     res.json({ code: 200, data: tenants });
   } catch (err) {
     res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
   }
 });
 
-// 获取可用服务器列表（未分配租户的）
+// 获取所有服务器列表（部署时选择用）
 router.get('/servers/available', verifyToken, requireRole('saas_admin'), (req, res) => {
   try {
-    const servers = db.prepare("SELECT id, name, ip_address, api_port FROM servers WHERE tenant_id IS NULL").all();
-    res.json({ code: 200, data: servers });
+    const servers = db.prepare("SELECT id, name, ip_address, api_port, ssh_port, status, tenant_id FROM servers ORDER BY tenant_id IS NOT NULL, created_at DESC").all();
+    // 标注每台服务器的分配状态
+    const result = servers.map(s => {
+      let assignedTenant = null;
+      if (s.tenant_id) {
+        const t = db.prepare('SELECT enterprise_id, name FROM tenants WHERE id = ?').get(s.tenant_id);
+        if (t) assignedTenant = `${t.name} (${t.enterprise_id})`;
+      }
+      return {
+        id: s.id,
+        name: s.name,
+        ip_address: s.ip_address,
+        api_port: s.api_port || 4001,
+        ssh_port: s.ssh_port || 22,
+        status: s.status,
+        assigned_tenant: assignedTenant,
+        is_available: !s.tenant_id
+      };
+    });
+    res.json({ code: 200, data: result });
   } catch (err) {
     res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
   }
@@ -272,14 +306,17 @@ router.post('/deploy', verifyToken, requireRole('saas_admin'), async (req, res) 
   db.prepare(`INSERT INTO deploy_logs (id, tenant_id, server_id, status, log, started_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)`)
     .run(deployId, tenant_id, server_id, 'deploying', '');
 
+  // 更新租户状态为部署中
+  db.prepare("UPDATE tenants SET deploy_status='deploying', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(tenant_id);
+
   log('========== 开始一键部署 ==========');
   log(`目标企业: ${tenant.name} (${tenant.enterprise_id})`);
-  log(`目标服务器: ${server.name} (${server.ip_address}:${server.ssh_port})`);
+  log(`目标服务器: ${server.name} (${server.ip_address}:${server.ssh_port || 22})`);
   log(`API端口: ${apiPort}`);
 
   try {
     // 通过SSH连接并执行部署
-    const result = await sshDeploy(server, tenant, apiPort, log);
+    await sshDeploy(server, tenant, apiPort, log);
 
     const apiUrl = `http://${server.ip_address}:${apiPort}/api`;
     const adminUrl = `http://${server.ip_address}:${apiPort}`;
@@ -291,7 +328,12 @@ router.post('/deploy', verifyToken, requireRole('saas_admin'), async (req, res) 
     log(`企业管理后台: ${adminUrl}`);
     log(`企业管理员账号: admin / 123456`);
 
-    // 更新数据库
+    // 更新数据库 - 先解绑旧服务器的租户
+    const oldServer = db.prepare('SELECT id FROM servers WHERE tenant_id = ?').get(tenant_id);
+    if (oldServer && oldServer.id !== server_id) {
+      db.prepare("UPDATE servers SET tenant_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(oldServer.id);
+    }
+
     db.prepare(`UPDATE deploy_logs SET status='success', log=?, finished_at=CURRENT_TIMESTAMP WHERE id=?`)
       .run(logLines.join('\n'), deployId);
     db.prepare('UPDATE tenants SET deploy_status=?, server_id=?, api_url=?, admin_url=?, ws_url=?, status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?')
@@ -301,9 +343,10 @@ router.post('/deploy', verifyToken, requireRole('saas_admin'), async (req, res) 
 
     res.json({ code: 200, message: '部署成功', data: { deploy_id: deployId, api_url: apiUrl, admin_url: adminUrl, ws_url: wsUrl, log: logLines } });
   } catch (err) {
-    log(`❌ 部署失败: ${err.message}`);
+    log(`部署失败: ${err.message}`);
     db.prepare(`UPDATE deploy_logs SET status='failed', log=?, finished_at=CURRENT_TIMESTAMP WHERE id=?`)
       .run(logLines.join('\n'), deployId);
+    db.prepare("UPDATE tenants SET deploy_status='failed', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(tenant_id);
     res.json({ code: 500, message: '部署失败: ' + err.message, data: { deploy_id: deployId, log: logLines } });
   }
 });
@@ -316,7 +359,9 @@ function sshDeploy(server, tenant, apiPort, log) {
       host: server.ip_address,
       port: server.ssh_port || 22,
       username: server.ssh_user || 'root',
-      readyTimeout: 30000
+      readyTimeout: 30000,
+      keepaliveInterval: 10000,
+      keepaliveCountMax: 5
     };
     if (server.ssh_key) {
       connectConfig.privateKey = server.ssh_key;
@@ -324,8 +369,14 @@ function sshDeploy(server, tenant, apiPort, log) {
       connectConfig.password = server.ssh_password;
     }
 
+    // 全局超时保护（10分钟，包含可能的Node.js/PM2安装时间）
+    const deployTimeout = setTimeout(() => {
+      try { conn.end(); } catch(e) {}
+      reject(new Error('部署超时（10分钟），请检查网络连接'));
+    }, 600000);
+
     conn.on('ready', () => {
-      log('[1/6] ✓ SSH连接成功');
+      log('[1/8] SSH连接成功');
 
       const deployDir = `/opt/yunxintong/${tenant.enterprise_id}`;
       const deployPackageDir = path.join(__dirname, '..', 'deploy-package');
@@ -333,62 +384,115 @@ function sshDeploy(server, tenant, apiPort, log) {
       // 读取deploy-package中所有文件
       const filesToUpload = getAllFiles(deployPackageDir, deployPackageDir);
 
-      log('[2/6] 上传企业服务程序...');
+      log('[2/8] 上传企业服务程序...');
 
       // 使用SFTP上传文件
       conn.sftp((err, sftp) => {
-        if (err) { conn.end(); return reject(new Error('SFTP连接失败: ' + err.message)); }
+        if (err) { clearTimeout(deployTimeout); conn.end(); return reject(new Error('SFTP连接失败: ' + err.message)); }
 
         // 先创建目录结构，然后上传文件
         const mkdirAndUpload = async () => {
           try {
             // 创建基础目录
-            await sshExec(conn, `mkdir -p ${deployDir}/data ${deployDir}/routes ${deployDir}/middleware ${deployDir}/models`);
+            await sshExec(conn, `mkdir -p ${deployDir}/data ${deployDir}/routes ${deployDir}/middleware ${deployDir}/models ${deployDir}/public`);
 
             // 上传每个文件
+            let uploadCount = 0;
             for (const file of filesToUpload) {
               if (file.relativePath.includes('node_modules/')) continue;
               const remotePath = `${deployDir}/${file.relativePath}`;
               const remoteDir = path.dirname(remotePath);
               await sshExec(conn, `mkdir -p ${remoteDir}`);
               await sftpUpload(sftp, file.localPath, remotePath);
-              log(`  上传: ${file.relativePath}`);
+              uploadCount++;
+              if (uploadCount % 10 === 0 || !file.relativePath.startsWith('public/canvaskit/')) {
+                log(`  上传: ${file.relativePath}`);
+              }
             }
-            log('[2/6] ✓ 文件上传完成');
+            log(`[2/8] 文件上传完成 (共${uploadCount}个文件)`);
 
             // 创建环境配置
-            log('[3/6] 配置环境...');
+            log('[3/8] 配置环境...');
             const envContent = `ENTERPRISE_ID=${tenant.enterprise_id}\nPORT=${apiPort}\nJWT_SECRET=yunxintong_${tenant.enterprise_id}_${Date.now()}\n`;
-            await sshExec(conn, `echo '${envContent}' > ${deployDir}/.env`);
-            log('[3/6] ✓ 环境配置完成');
+            await sshExec(conn, `cat > ${deployDir}/.env << 'ENVEOF'\n${envContent}ENVEOF`);
+            log('[3/8] 环境配置完成');
 
-            // 安装依赖
-            log('[4/6] 安装Node.js依赖...');
+            // 检测并安装Node.js
+            log('[4/8] 检测Node.js环境...');
+            const nodeCheck = await sshExec(conn, 'node -v 2>/dev/null || echo "NODE_NOT_FOUND"');
+            if (nodeCheck.includes('NODE_NOT_FOUND')) {
+              log('[4/8] Node.js未安装，正在自动安装Node.js 22...');
+              // 使用NodeSource安装Node.js 22
+              const installNodeResult = await sshExec(conn, `
+                export DEBIAN_FRONTEND=noninteractive && \
+                apt-get update -qq && \
+                apt-get install -y -qq curl ca-certificates gnupg 2>&1 | tail -2 && \
+                mkdir -p /etc/apt/keyrings && \
+                curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg 2>/dev/null && \
+                echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
+                apt-get update -qq && \
+                apt-get install -y -qq nodejs 2>&1 | tail -3 && \
+                echo "NODE_INSTALL_DONE"
+              `);
+              if (!installNodeResult.includes('NODE_INSTALL_DONE')) {
+                log('  Node.js安装可能有问题，尝试备用方案...');
+                await sshExec(conn, 'curl -fsSL https://deb.nodesource.com/setup_22.x | bash - 2>&1 | tail -3 && apt-get install -y nodejs 2>&1 | tail -3');
+              }
+              const nodeVer = await sshExec(conn, 'node -v 2>/dev/null || echo "STILL_NOT_FOUND"');
+              if (nodeVer.includes('STILL_NOT_FOUND')) {
+                throw new Error('Node.js安装失败，请手动在目标服务器上安装Node.js 22');
+              }
+              log(`[4/8] Node.js安装成功: ${nodeVer.trim()}`);
+            } else {
+              log(`[4/8] Node.js已安装: ${nodeCheck.trim()}`);
+            }
+
+            // 检测并安装PM2
+            log('[5/8] 检测PM2...');
+            const pm2Check = await sshExec(conn, 'pm2 -v 2>/dev/null || echo "PM2_NOT_FOUND"');
+            if (pm2Check.includes('PM2_NOT_FOUND')) {
+              log('[5/8] PM2未安装，正在自动安装...');
+              await sshExec(conn, 'npm install -g pm2 2>&1 | tail -3');
+              const pm2Ver = await sshExec(conn, 'pm2 -v 2>/dev/null || echo "STILL_NOT_FOUND"');
+              if (pm2Ver.includes('STILL_NOT_FOUND')) {
+                throw new Error('PM2安装失败，请手动在目标服务器上执行: npm install -g pm2');
+              }
+              // 配置PM2开机自启
+              await sshExec(conn, 'pm2 startup 2>/dev/null || true');
+              log(`[5/8] PM2安装成功: ${pm2Ver.trim()}`);
+            } else {
+              log(`[5/8] PM2已安装: ${pm2Check.trim()}`);
+            }
+
+            // 安装npm依赖
+            log('[6/8] 安装Node.js依赖...');
             const installResult = await sshExec(conn, `cd ${deployDir} && npm install --production 2>&1 | tail -5`);
             log(`  ${installResult.trim()}`);
-            log('[4/6] ✓ 依赖安装完成');
+            log('[6/8] 依赖安装完成');
 
             // 使用pm2启动服务
-            log('[5/6] 启动服务...');
+            log('[7/8] 启动服务...');
             const pmName = `yxt-${tenant.enterprise_id}`;
             await sshExec(conn, `pm2 delete ${pmName} 2>/dev/null; cd ${deployDir} && PORT=${apiPort} ENTERPRISE_ID=${tenant.enterprise_id} pm2 start index.js --name ${pmName}`);
             await sshExec(conn, 'pm2 save 2>/dev/null');
-            log('[5/6] ✓ 服务启动成功');
+            log('[7/8] 服务启动成功');
 
             // 验证服务
-            log('[6/6] 验证服务...');
-            // 等待2秒让服务启动
-            await new Promise(r => setTimeout(r, 2000));
-            const healthCheck = await sshExec(conn, `curl -s http://localhost:${apiPort}/api/health || echo "HEALTH_CHECK_FAILED"`);
+            log('[8/8] 验证服务...');
+            // 等待3秒让服务启动
+            await new Promise(r => setTimeout(r, 3000));
+            const healthCheck = await sshExec(conn, `curl -s --connect-timeout 5 http://localhost:${apiPort}/api/health || echo "HEALTH_CHECK_FAILED"`);
             if (healthCheck.includes('HEALTH_CHECK_FAILED')) {
-              log('[6/6] ⚠ 健康检查未通过，服务可能还在启动中');
+              log('[8/8] 健康检查未通过，服务可能还在启动中');
             } else {
-              log('[6/6] ✓ 服务健康检查通过');
+              log('[8/8] 服务健康检查通过');
             }
 
+            clearTimeout(deployTimeout);
             conn.end();
             resolve();
           } catch (e) {
+            clearTimeout(deployTimeout);
             conn.end();
             reject(e);
           }
@@ -399,7 +503,8 @@ function sshDeploy(server, tenant, apiPort, log) {
     });
 
     conn.on('error', (err) => {
-      log(`❌ SSH连接失败: ${err.message}`);
+      clearTimeout(deployTimeout);
+      log(`SSH连接失败: ${err.message}`);
       reject(new Error('SSH连接失败: ' + err.message));
     });
 
@@ -435,6 +540,7 @@ function sftpUpload(sftp, localPath, remotePath) {
     const writeStream = sftp.createWriteStream(remotePath);
     writeStream.on('close', () => resolve());
     writeStream.on('error', (err) => reject(new Error(`上传失败 ${remotePath}: ${err.message}`)));
+    readStream.on('error', (err) => reject(new Error(`读取失败 ${localPath}: ${err.message}`)));
     readStream.pipe(writeStream);
   });
 }
@@ -454,6 +560,114 @@ function getAllFiles(dir, baseDir) {
     }
   }
   return results;
+}
+
+// ==================== 一键清除（SSH远程清除） ====================
+
+router.post('/undeploy', verifyToken, requireRole('saas_admin'), async (req, res) => {
+  const { tenant_id } = req.body;
+  if (!tenant_id) return res.json({ code: 400, message: '请指定租户' });
+
+  const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tenant_id);
+  if (!tenant) return res.json({ code: 404, message: '租户不存在' });
+  if (tenant.deploy_status !== 'deployed') return res.json({ code: 400, message: '该租户尚未部署' });
+
+  const server = tenant.server_id ? db.prepare('SELECT * FROM servers WHERE id = ?').get(tenant.server_id) : null;
+  if (!server) return res.json({ code: 404, message: '未找到关联的服务器，将直接重置租户状态' });
+
+  const logLines = [];
+  function log(msg) {
+    const line = `[${new Date().toISOString()}] ${msg}`;
+    logLines.push(line);
+    console.log(`[Undeploy] ${msg}`);
+  }
+
+  log('========== 开始一键清除 ==========');
+  log(`目标企业: ${tenant.name} (${tenant.enterprise_id})`);
+  log(`目标服务器: ${server.name} (${server.ip_address})`);
+
+  try {
+    await sshUndeploy(server, tenant, log);
+
+    // 更新数据库：重置租户状态
+    db.prepare("UPDATE tenants SET deploy_status='pending', server_id=NULL, api_url=NULL, admin_url=NULL, ws_url=NULL, status='pending', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(tenant_id);
+    // 释放服务器
+    db.prepare("UPDATE servers SET tenant_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(server.id);
+
+    log('');
+    log('========== 清除完成 ==========');
+    log(`服务器 ${server.name} 已释放，可重新用于部署`);
+
+    res.json({ code: 200, message: '清除成功', data: { log: logLines } });
+  } catch (err) {
+    log(`清除失败: ${err.message}`);
+    // 即使SSH失败，也重置数据库状态让服务器可重新使用
+    db.prepare("UPDATE tenants SET deploy_status='pending', server_id=NULL, api_url=NULL, admin_url=NULL, ws_url=NULL, status='pending', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(tenant_id);
+    db.prepare("UPDATE servers SET tenant_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(server.id);
+    res.json({ code: 200, message: '清除完成（远程清理可能部分失败，数据库已重置）', data: { log: logLines } });
+  }
+});
+
+// SSH清除核心逻辑
+function sshUndeploy(server, tenant, log) {
+  return new Promise((resolve, reject) => {
+    const conn = new Client();
+    const connectConfig = {
+      host: server.ip_address,
+      port: server.ssh_port || 22,
+      username: server.ssh_user || 'root',
+      readyTimeout: 15000,
+      keepaliveInterval: 5000
+    };
+    if (server.ssh_key) {
+      connectConfig.privateKey = server.ssh_key;
+    } else if (server.ssh_password) {
+      connectConfig.password = server.ssh_password;
+    }
+
+    const timeout = setTimeout(() => {
+      try { conn.end(); } catch(e) {}
+      reject(new Error('SSH连接超时'));
+    }, 60000);
+
+    conn.on('ready', async () => {
+      try {
+        const pmName = `yxt-${tenant.enterprise_id}`;
+        const deployDir = `/opt/yunxintong/${tenant.enterprise_id}`;
+
+        log('[1/3] SSH连接成功');
+
+        // 停止PM2进程
+        log('[2/3] 停止服务进程...');
+        const stopResult = await sshExec(conn, `pm2 stop ${pmName} 2>/dev/null && pm2 delete ${pmName} 2>/dev/null && pm2 save 2>/dev/null; echo "done"`);
+        log(`  PM2进程 ${pmName} 已停止并删除`);
+
+        // 删除部署目录
+        log('[3/3] 清除部署文件...');
+        const rmResult = await sshExec(conn, `rm -rf ${deployDir} && echo "removed"`);
+        if (rmResult.includes('removed')) {
+          log(`  部署目录 ${deployDir} 已删除`);
+        } else {
+          log(`  部署目录清理结果: ${rmResult.trim()}`);
+        }
+
+        clearTimeout(timeout);
+        conn.end();
+        resolve();
+      } catch (e) {
+        clearTimeout(timeout);
+        conn.end();
+        reject(e);
+      }
+    });
+
+    conn.on('error', (err) => {
+      clearTimeout(timeout);
+      reject(new Error('SSH连接失败: ' + err.message));
+    });
+
+    conn.connect(connectConfig);
+  });
 }
 
 // ==================== 订单管理 ====================

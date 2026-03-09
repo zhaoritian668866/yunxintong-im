@@ -12,7 +12,7 @@ const corsOptions = {
 };
 
 // ==================== 公用前端应用 ====================
-const USER_WEB_DIR = path.join(__dirname, '../build/web_user');
+const USER_WEB_DIR = path.join(__dirname, 'build/web_user');
 const PORT_USER = process.env.PORT_USER || 8088;
 const userApp = express();
 userApp.use(cors(corsOptions));
@@ -43,7 +43,7 @@ userApp.use((req, res, next) => {
 });
 
 // ==================== SaaS管理后台应用 ====================
-const SAAS_WEB_DIR = path.join(__dirname, '../build/web_saas');
+const SAAS_WEB_DIR = path.join(__dirname, 'build/web_saas');
 const PORT_SAAS = process.env.PORT_SAAS || 8081;
 const saasApp = express();
 saasApp.use(cors(corsOptions));

@@ -61,21 +61,23 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
     }
   }
 
-  String _statusLabel(String status) {
+  String _deployStatusLabel(String? status) {
     switch (status) {
-      case 'active': return '运行中';
+      case 'deployed': return '已部署';
+      case 'deploying': return '部署中';
+      case 'failed': return '部署失败';
       case 'pending': return '待部署';
-      case 'suspended': return '已暂停';
-      default: return status;
+      default: return '待部署';
     }
   }
 
-  Color _statusColor(String status) {
+  Color _deployStatusColor(String? status) {
     switch (status) {
-      case 'active': return AppColors.success;
-      case 'pending': return AppColors.warning;
-      case 'suspended': return AppColors.error;
-      default: return AppColors.textSecondary;
+      case 'deployed': return AppColors.success;
+      case 'deploying': return AppColors.warning;
+      case 'failed': return AppColors.error;
+      case 'pending': return Colors.orange;
+      default: return Colors.orange;
     }
   }
 
@@ -98,6 +100,12 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
                 const Text('一键部署', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
                 Text('选择租户和服务器，一键完成企业IM服务部署', style: TextStyle(color: AppColors.textSecondary, fontSize: 13)),
               ]),
+              const Spacer(),
+              OutlinedButton.icon(
+                onPressed: _loadData,
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('刷新'),
+              ),
             ]),
             const SizedBox(height: 28),
 
@@ -196,6 +204,7 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
       else
         ..._undeployedTenants.map((t) {
           final isSelected = _selectedTenantId == t['id'].toString();
+          final deployStatus = t['deploy_status']?.toString() ?? 'pending';
           return GestureDetector(
             onTap: () => setState(() { _selectedTenantId = t['id'].toString(); _selectedTenant = t; }),
             child: Container(
@@ -222,12 +231,12 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
                     const SizedBox(width: 8),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(color: AppColors.warning.withOpacity(0.1), borderRadius: BorderRadius.circular(4)),
-                      child: Text('待部署', style: TextStyle(fontSize: 11, color: AppColors.warning, fontWeight: FontWeight.w500)),
+                      decoration: BoxDecoration(color: _deployStatusColor(deployStatus).withOpacity(0.1), borderRadius: BorderRadius.circular(4)),
+                      child: Text(_deployStatusLabel(deployStatus), style: TextStyle(fontSize: 11, color: _deployStatusColor(deployStatus), fontWeight: FontWeight.w500)),
                     ),
                   ]),
                   const SizedBox(height: 4),
-                  Text('企业ID: ${t['enterprise_id']} | 套餐: ${_planLabel(t['plan'] ?? '')} | 最大用户: ${t['max_users'] ?? 0}',
+                  Text('企业ID: ${t['enterprise_id']} | 套餐: ${_planLabel(t['plan'] ?? 'basic')} | 最大用户: ${t['max_users'] ?? 100}',
                     style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
                 ])),
                 if (isSelected) const Icon(Icons.check_circle, color: AppColors.primary, size: 24),
@@ -257,7 +266,7 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const Text('步骤 2：选择目标服务器', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
       const SizedBox(height: 8),
-      Text('选择一台可用的服务器用于部署企业IM服务', style: TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+      Text('选择一台服务器用于部署企业IM服务（已分配的服务器将覆盖部署）', style: TextStyle(color: AppColors.textSecondary, fontSize: 14)),
       const SizedBox(height: 20),
       if (_availableServers.isEmpty)
         Container(
@@ -267,7 +276,7 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
           child: Column(children: [
             Icon(Icons.dns_outlined, size: 56, color: Colors.grey.shade300),
             const SizedBox(height: 12),
-            const Text('暂无可用服务器', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+            const Text('暂无服务器', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
             const SizedBox(height: 4),
             Text('请先在服务器管理中添加服务器', style: TextStyle(color: AppColors.textSecondary, fontSize: 13)),
           ]),
@@ -275,6 +284,8 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
       else
         ..._availableServers.map((s) {
           final isSelected = _selectedServerId == s['id'].toString();
+          final isAvailable = s['is_available'] == true;
+          final assignedTenant = s['assigned_tenant']?.toString() ?? '';
           return GestureDetector(
             onTap: () => setState(() { _selectedServerId = s['id'].toString(); _selectedServer = s; }),
             child: Container(
@@ -301,12 +312,18 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
                     const SizedBox(width: 8),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(color: AppColors.success.withOpacity(0.1), borderRadius: BorderRadius.circular(4)),
-                      child: Text('可用', style: TextStyle(fontSize: 11, color: AppColors.success, fontWeight: FontWeight.w500)),
+                      decoration: BoxDecoration(
+                        color: isAvailable ? AppColors.success.withOpacity(0.1) : AppColors.warning.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        isAvailable ? '可用' : '已分配',
+                        style: TextStyle(fontSize: 11, color: isAvailable ? AppColors.success : AppColors.warning, fontWeight: FontWeight.w500),
+                      ),
                     ),
                   ]),
                   const SizedBox(height: 4),
-                  Text('IP: ${s['ip_address']} | ${s['cpu_cores'] ?? 0}核 / ${s['memory_gb'] ?? 0}GB内存 / ${s['disk_gb'] ?? 0}GB硬盘',
+                  Text('IP: ${s['ip_address']} | 端口: ${s['api_port'] ?? 4001}${assignedTenant.isNotEmpty ? ' | 当前租户: $assignedTenant' : ''}',
                     style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
                 ])),
                 if (isSelected) const Icon(Icons.check_circle, color: AppColors.primary, size: 24),
@@ -339,11 +356,30 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
 
   // 步骤3：确认部署
   Widget _buildStep3() {
+    final serverAssigned = _selectedServer?['assigned_tenant']?.toString() ?? '';
+    final isServerAssigned = serverAssigned.isNotEmpty;
+
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const Text('步骤 3：确认部署信息', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
       const SizedBox(height: 8),
       Text('请确认以下部署信息无误后，点击开始部署', style: TextStyle(color: AppColors.textSecondary, fontSize: 14)),
       const SizedBox(height: 20),
+
+      // 警告：服务器已分配
+      if (isServerAssigned) ...[
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          margin: const EdgeInsets.only(bottom: 16),
+          decoration: BoxDecoration(color: AppColors.warning.withOpacity(0.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: AppColors.warning.withOpacity(0.3))),
+          child: Row(children: [
+            const Icon(Icons.warning_amber_rounded, size: 20, color: AppColors.warning),
+            const SizedBox(width: 8),
+            Expanded(child: Text('该服务器已分配给 $serverAssigned，部署将覆盖原有服务', style: const TextStyle(fontSize: 13, color: AppColors.warning))),
+          ]),
+        ),
+      ],
+
       Container(
         width: double.infinity,
         padding: const EdgeInsets.all(20),
@@ -355,11 +391,11 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
           const Divider(height: 20),
           _buildInfoRow(Icons.card_membership, '套餐', _planLabel(_selectedTenant?['plan'] ?? '')),
           const Divider(height: 20),
-          _buildInfoRow(Icons.people, '最大用户数', '${_selectedTenant?['max_users'] ?? 0}'),
+          _buildInfoRow(Icons.people, '最大用户数', '${_selectedTenant?['max_users'] ?? 100}'),
           const Divider(height: 20),
           _buildInfoRow(Icons.dns, '目标服务器', '${_selectedServer?['name'] ?? ''} (${_selectedServer?['ip_address'] ?? ''})'),
           const Divider(height: 20),
-          _buildInfoRow(Icons.memory, '服务器配置', '${_selectedServer?['cpu_cores'] ?? 0}核 / ${_selectedServer?['memory_gb'] ?? 0}GB / ${_selectedServer?['disk_gb'] ?? 0}GB'),
+          _buildInfoRow(Icons.settings_ethernet, 'API端口', '${_selectedServer?['api_port'] ?? 4001}'),
           const Divider(height: 20),
           _buildInfoRow(Icons.inventory_2, '部署内容', 'Node.js + SQLite + 企业后端 + 管理后台'),
         ]),
@@ -385,9 +421,9 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
           child: ListView(
             children: _deployLogs.map((log) {
               Color logColor = const Color(0xFF4EC9B0);
-              if (log.contains('✅') || log.contains('成功') || log.contains('完成')) logColor = const Color(0xFF6A9955);
-              if (log.contains('❌') || log.contains('失败')) logColor = const Color(0xFFCE9178);
-              if (log.startsWith('>')) logColor = const Color(0xFF9CDCFE);
+              if (log.contains('成功') || log.contains('完成') || log.contains('通过')) logColor = const Color(0xFF6A9955);
+              if (log.contains('失败') || log.contains('错误')) logColor = const Color(0xFFCE9178);
+              if (log.startsWith('>') || log.startsWith('  ')) logColor = const Color(0xFF9CDCFE);
               if (log.startsWith('===')) logColor = const Color(0xFFDCDCAA);
               return Padding(
                 padding: const EdgeInsets.only(bottom: 2),
@@ -446,7 +482,7 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
 
   // 已部署租户列表
   Widget _buildDeployedList() {
-    final deployed = _allTenants.where((t) => t['status'] == 'active' && t['server_ip'] != null && t['server_ip'].toString().isNotEmpty).toList();
+    final deployed = _allTenants.where((t) => t['deploy_status'] == 'deployed').toList();
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(24),
@@ -498,18 +534,182 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(t['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
                 const SizedBox(height: 4),
-                Text('企业ID: ${t['enterprise_id']} | 服务器: ${t['server_ip'] ?? ''} | API: ${t['api_url'] ?? ''} | 套餐: ${_planLabel(t['plan'] ?? '')}',
+                Text('企业ID: ${t['enterprise_id']} | 服务器: ${t['server_ip'] ?? '未知'} | API: ${t['api_url'] ?? ''} | 套餐: ${_planLabel(t['plan'] ?? '')}',
                   style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
               ])),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(color: AppColors.success.withOpacity(0.1), borderRadius: BorderRadius.circular(6)),
-                child: const Text('运行中', style: TextStyle(color: AppColors.success, fontSize: 12, fontWeight: FontWeight.w500)),
+                decoration: BoxDecoration(color: t['status'] == 'active' ? AppColors.success.withOpacity(0.1) : AppColors.error.withOpacity(0.1), borderRadius: BorderRadius.circular(6)),
+                child: Text(t['status'] == 'active' ? '运行中' : '已停用', style: TextStyle(color: t['status'] == 'active' ? AppColors.success : AppColors.error, fontSize: 12, fontWeight: FontWeight.w500)),
+              ),
+              const SizedBox(width: 10),
+              ElevatedButton.icon(
+                onPressed: () => _confirmUndeploy(t),
+                icon: const Icon(Icons.delete_sweep, size: 16),
+                label: const Text('一键清除'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.error,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  textStyle: const TextStyle(fontSize: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
               ),
             ]),
           )),
       ]),
     );
+  }
+
+  void _confirmUndeploy(Map<String, dynamic> tenant) {
+    final name = tenant['name'] ?? '';
+    final eid = tenant['enterprise_id'] ?? '';
+    final serverIp = tenant['server_ip'] ?? '未知';
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(children: [
+          Icon(Icons.warning_amber_rounded, color: AppColors.error, size: 28),
+          const SizedBox(width: 8),
+          const Text('确认一键清除'),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('确定要清除以下企业的部署吗？', style: TextStyle(fontSize: 15)),
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(color: AppColors.error.withOpacity(0.05), borderRadius: BorderRadius.circular(10), border: Border.all(color: AppColors.error.withOpacity(0.2))),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('企业名称: $name', style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Text('企业ID: $eid', style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+              Text('服务器: $serverIp', style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+            ]),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(color: Colors.amber.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Icon(Icons.info_outline, color: Colors.amber, size: 18),
+              const SizedBox(width: 8),
+              Expanded(child: Text('此操作将停止服务器上的企业服务并删除部署文件，服务器将被释放为可用状态，可重新用于部署其他企业。',
+                style: TextStyle(fontSize: 12, color: Colors.amber.shade800))),
+            ]),
+          ),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          ElevatedButton(
+            onPressed: () { Navigator.pop(ctx); _doUndeploy(tenant); },
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error, foregroundColor: Colors.white),
+            child: const Text('确认清除'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _doUndeploy(Map<String, dynamic> tenant) async {
+    final tenantId = tenant['id'].toString();
+    final tenantName = tenant['name'] ?? '';
+    final eid = tenant['enterprise_id'] ?? '';
+
+    // 显示清除进度对话框
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setDialogState) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(children: [
+            const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox(width: 12),
+            Text('正在清除 $tenantName...'),
+          ]),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text('正在连接服务器并清除部署文件，请稍候...'),
+            const SizedBox(height: 16),
+            const LinearProgressIndicator(),
+          ]),
+        );
+      }),
+    );
+
+    final res = await ApiService.saasUndeploy(tenantId);
+
+    if (!mounted) return;
+    Navigator.of(context).pop(); // 关闭进度对话框
+
+    if (res.isSuccess || res.code == 200) {
+      // 显示清除日志
+      final logs = res.data?['log'];
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(children: [
+            const Icon(Icons.check_circle, color: AppColors.success, size: 28),
+            const SizedBox(width: 8),
+            const Text('清除完成'),
+          ]),
+          content: SizedBox(
+            width: 500,
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('$tenantName ($eid) 已成功清除', style: const TextStyle(fontWeight: FontWeight.w500)),
+              const SizedBox(height: 8),
+              Text(res.message, style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+              if (logs is List) ...[
+                const SizedBox(height: 12),
+                Container(
+                  height: 200,
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(8)),
+                  child: SingleChildScrollView(
+                    child: SelectableText(
+                      logs.join('\n'),
+                      style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: Colors.greenAccent, height: 1.5),
+                    ),
+                  ),
+                ),
+              ],
+            ]),
+          ),
+          actions: [
+            ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('确定')),
+          ],
+        ),
+      );
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(children: [
+            const Icon(Icons.check_circle, color: Colors.white, size: 20),
+            const SizedBox(width: 8),
+            Text('$tenantName 清除成功，服务器已释放'),
+          ]),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppColors.success,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+
+      // 刷新数据
+      _loadData();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('清除失败: ${res.message}'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppColors.error,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+    }
   }
 
   void _startDeploy() async {
@@ -525,7 +725,7 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
       _deployProgress = 0.1;
     });
 
-    // 调用后端真实SSH部署API
+    // 调用后端真实SSH部署API - 使用更长的超时时间
     final res = await ApiService.saasDeploy(_selectedTenantId!, {'server_id': _selectedServerId});
 
     if (!mounted) return;
@@ -535,7 +735,7 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
       final serverLogs = res.data?['log'];
       if (serverLogs is List) {
         for (int i = 0; i < serverLogs.length; i++) {
-          await Future.delayed(const Duration(milliseconds: 200));
+          await Future.delayed(const Duration(milliseconds: 150));
           if (!mounted) return;
           setState(() {
             _deployLogs.add(serverLogs[i].toString());
@@ -548,7 +748,7 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
       final adminUrl = res.data?['admin_url'] ?? '';
       setState(() {
         _deployLogs.add('');
-        _deployLogs.add('=== ✅ 部署完成! ===');
+        _deployLogs.add('=== 部署完成! ===');
         _deployLogs.add('  企业名称: $tenantName');
         _deployLogs.add('  企业ID: $enterpriseId');
         _deployLogs.add('  API地址: $apiUrl');
@@ -584,8 +784,8 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
       }
       setState(() {
         _deployLogs.add('');
-        _deployLogs.add('❌ 部署失败: ${res.message}');
-        _deployLogs.add('请检查服务器连接信息是否正确');
+        _deployLogs.add('部署失败: ${res.message}');
+        _deployLogs.add('请检查服务器SSH连接信息是否正确（IP、端口、用户名、密码）');
         _deployProgress = 1.0;
       });
     }

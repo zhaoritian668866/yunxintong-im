@@ -8,6 +8,14 @@ const ENTERPRISE_ID = process.env.ENTERPRISE_ID || 'UNKNOWN';
 const dataDir = path.join(__dirname, '..', 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
+// 上传目录
+const uploadDir = path.join(__dirname, '..', 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+['images', 'videos', 'voices', 'files'].forEach(sub => {
+  const dir = path.join(uploadDir, sub);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
+
 const dbPath = path.join(dataDir, 'enterprise.db');
 const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
@@ -94,7 +102,7 @@ function initDatabase() {
     )
   `);
 
-  // 消息表
+  // 消息表 - type支持: text, image, video, voice, file, mixed(图文混合)
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
@@ -104,6 +112,10 @@ function initDatabase() {
       content TEXT NOT NULL,
       file_url TEXT,
       file_name TEXT,
+      file_size INTEGER,
+      duration INTEGER,
+      thumbnail_url TEXT,
+      images TEXT,
       reply_to TEXT,
       is_recalled INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -112,11 +124,12 @@ function initDatabase() {
     )
   `);
 
-  // 企业设置表
+  // 企业设置表 - 包含所有功能开关
   db.exec(`
     CREATE TABLE IF NOT EXISTS settings (
       id TEXT PRIMARY KEY,
       enterprise_name TEXT DEFAULT '',
+      -- 基本设置
       require_approval INTEGER DEFAULT 0,
       allow_group_creation INTEGER DEFAULT 1,
       allow_file_sharing INTEGER DEFAULT 1,
@@ -125,10 +138,78 @@ function initDatabase() {
       max_group_members INTEGER DEFAULT 500,
       max_users INTEGER DEFAULT 100,
       watermark_enabled INTEGER DEFAULT 0,
+      -- 聊天功能开关
+      enable_voice_message INTEGER DEFAULT 1,
+      enable_image_send INTEGER DEFAULT 1,
+      enable_video_send INTEGER DEFAULT 1,
+      enable_emoji INTEGER DEFAULT 1,
+      enable_voice_call INTEGER DEFAULT 1,
+      enable_video_call INTEGER DEFAULT 1,
+      enable_read_receipt INTEGER DEFAULT 1,
+      enable_msg_recall INTEGER DEFAULT 1,
+      enable_file_send INTEGER DEFAULT 1,
+      -- 工作台功能开关
+      enable_workbench INTEGER DEFAULT 1,
+      enable_schedule INTEGER DEFAULT 1,
+      enable_task INTEGER DEFAULT 1,
+      enable_cloud_drive INTEGER DEFAULT 1,
+      enable_approval INTEGER DEFAULT 1,
+      enable_attendance INTEGER DEFAULT 1,
+      enable_meeting_room INTEGER DEFAULT 1,
+      enable_announcement INTEGER DEFAULT 1,
+      enable_voting INTEGER DEFAULT 1,
+      enable_expense INTEGER DEFAULT 1,
+      enable_calendar INTEGER DEFAULT 1,
+      enable_report INTEGER DEFAULT 1,
+      enable_analytics INTEGER DEFAULT 1,
+      -- 时间戳
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // 安全地添加新列（如果不存在）
+  const addColumnIfNotExists = (table, column, definition) => {
+    try {
+      const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+      if (!cols.find(c => c.name === column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      }
+    } catch (e) { /* ignore */ }
+  };
+
+  // 确保messages表有新字段
+  addColumnIfNotExists('messages', 'file_size', 'INTEGER');
+  addColumnIfNotExists('messages', 'duration', 'INTEGER');
+  addColumnIfNotExists('messages', 'thumbnail_url', 'TEXT');
+  addColumnIfNotExists('messages', 'images', 'TEXT');
+
+  // 确保settings表有所有功能开关字段
+  const settingsFields = [
+    ['enable_voice_message', 'INTEGER DEFAULT 1'],
+    ['enable_image_send', 'INTEGER DEFAULT 1'],
+    ['enable_video_send', 'INTEGER DEFAULT 1'],
+    ['enable_emoji', 'INTEGER DEFAULT 1'],
+    ['enable_voice_call', 'INTEGER DEFAULT 1'],
+    ['enable_video_call', 'INTEGER DEFAULT 1'],
+    ['enable_read_receipt', 'INTEGER DEFAULT 1'],
+    ['enable_msg_recall', 'INTEGER DEFAULT 1'],
+    ['enable_file_send', 'INTEGER DEFAULT 1'],
+    ['enable_workbench', 'INTEGER DEFAULT 1'],
+    ['enable_schedule', 'INTEGER DEFAULT 1'],
+    ['enable_task', 'INTEGER DEFAULT 1'],
+    ['enable_cloud_drive', 'INTEGER DEFAULT 1'],
+    ['enable_approval', 'INTEGER DEFAULT 1'],
+    ['enable_attendance', 'INTEGER DEFAULT 1'],
+    ['enable_meeting_room', 'INTEGER DEFAULT 1'],
+    ['enable_announcement', 'INTEGER DEFAULT 1'],
+    ['enable_voting', 'INTEGER DEFAULT 1'],
+    ['enable_expense', 'INTEGER DEFAULT 1'],
+    ['enable_calendar', 'INTEGER DEFAULT 1'],
+    ['enable_report', 'INTEGER DEFAULT 1'],
+    ['enable_analytics', 'INTEGER DEFAULT 1'],
+  ];
+  settingsFields.forEach(([col, def]) => addColumnIfNotExists('settings', col, def));
 
   // 创建索引
   db.exec(`
@@ -163,4 +244,4 @@ function seedDefaultData() {
   console.log('   默认管理员: admin / 123456');
 }
 
-module.exports = { db, initDatabase };
+module.exports = { db, initDatabase, uploadDir };

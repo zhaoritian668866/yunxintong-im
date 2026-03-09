@@ -43,22 +43,35 @@ class _SaasTenantPageState extends State<SaasTenantPage> {
     var list = _tenants;
     if (_searchQuery.isNotEmpty) {
       list = list.where((t) =>
-        (t['name'] ?? '').toString().contains(_searchQuery) ||
-        (t['enterprise_id'] ?? '').toString().contains(_searchQuery) ||
-        (t['contact_person'] ?? '').toString().contains(_searchQuery)
+        (t['name'] ?? '').toString().toLowerCase().contains(_searchQuery.toLowerCase()) ||
+        (t['enterprise_id'] ?? '').toString().toLowerCase().contains(_searchQuery.toLowerCase()) ||
+        (t['contact_person'] ?? '').toString().toLowerCase().contains(_searchQuery.toLowerCase())
       ).toList();
     }
     if (_statusFilter != '全部') {
       list = list.where((t) {
+        final status = t['status']?.toString() ?? '';
+        final deployStatus = t['deploy_status']?.toString() ?? '';
         switch (_statusFilter) {
-          case '运行中': return t['status'] == 'running';
-          case '已停止': return t['status'] == 'stopped';
-          case '待部署': return t['status'] == 'pending';
+          case '运行中': return status == 'active' && deployStatus == 'deployed';
+          case '已停用': return status == 'stopped' || status == 'suspended';
+          case '待部署': return deployStatus == 'pending' || deployStatus == 'failed' || status == 'pending';
           default: return true;
         }
       }).toList();
     }
     return list;
+  }
+
+  String _getDisplayStatus(Map<String, dynamic> t) {
+    final status = t['status']?.toString() ?? '';
+    final deployStatus = t['deploy_status']?.toString() ?? '';
+    if (deployStatus == 'pending' || (status == 'pending' && deployStatus != 'deployed')) return 'pending';
+    if (deployStatus == 'deploying') return 'deploying';
+    if (deployStatus == 'failed') return 'failed';
+    if (status == 'active' && deployStatus == 'deployed') return 'active';
+    if (status == 'stopped' || status == 'suspended') return 'stopped';
+    return status;
   }
 
   @override
@@ -91,7 +104,7 @@ class _SaasTenantPageState extends State<SaasTenantPage> {
             )),
             _buildFilterChip('全部'),
             _buildFilterChip('运行中'),
-            _buildFilterChip('已停止'),
+            _buildFilterChip('已停用'),
             _buildFilterChip('待部署'),
             const SizedBox(width: 8),
             ElevatedButton.icon(
@@ -140,7 +153,7 @@ class _SaasTenantPageState extends State<SaasTenantPage> {
                   DataCell(_buildPlanChip(t['plan'] ?? 'basic')),
                   DataCell(Text('${t['max_users'] ?? 100}', style: const TextStyle(fontFamily: 'monospace'))),
                   DataCell(Text(t['api_url'] ?? '-', style: const TextStyle(fontSize: 12, fontFamily: 'monospace'))),
-                  DataCell(_buildStatusChip(t['status'] ?? 'pending')),
+                  DataCell(_buildStatusChip(_getDisplayStatus(t))),
                   DataCell(Text(_formatDate(t['created_at'] ?? ''), style: const TextStyle(fontSize: 12, color: AppColors.textSecondary))),
                   DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
                     IconButton(icon: const Icon(Icons.visibility_outlined, size: 18, color: AppColors.info), onPressed: () => _showTenantDetail(t), tooltip: '详情'),
@@ -175,11 +188,13 @@ class _SaasTenantPageState extends State<SaasTenantPage> {
   Widget _buildStatusChip(String status) {
     Color color; String text;
     switch (status) {
-      case 'running': color = AppColors.success; text = '运行中';
-      case 'stopped': color = AppColors.error; text = '已停止';
+      case 'active': color = AppColors.success; text = '运行中';
+      case 'stopped': color = AppColors.error; text = '已停用';
+      case 'suspended': color = AppColors.error; text = '已停用';
       case 'deploying': color = AppColors.warning; text = '部署中';
-      case 'pending': color = Colors.grey; text = '待部署';
-      default: color = AppColors.error; text = '异常';
+      case 'failed': color = AppColors.error; text = '部署失败';
+      case 'pending': color = Colors.orange; text = '待部署';
+      default: color = Colors.grey; text = '未知';
     }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -400,8 +415,8 @@ class _SaasTenantPageState extends State<SaasTenantPage> {
               value: status, isExpanded: true,
               items: const [
                 DropdownMenuItem(value: 'pending', child: Text('待部署')),
-                DropdownMenuItem(value: 'running', child: Text('运行中')),
-                DropdownMenuItem(value: 'stopped', child: Text('已停止')),
+                DropdownMenuItem(value: 'active', child: Text('运行中')),
+                DropdownMenuItem(value: 'stopped', child: Text('已停用')),
               ],
               onChanged: (v) => setDialogState(() => status = v ?? 'pending'),
             )),
@@ -454,6 +469,8 @@ class _SaasTenantPageState extends State<SaasTenantPage> {
         _detailRow('管理后台地址', t['admin_url'] ?? '未配置'),
         _detailRow('WebSocket地址', t['ws_url'] ?? '未配置'),
         _detailRow('状态', t['status'] ?? 'pending'),
+        _detailRow('部署状态', t['deploy_status'] ?? 'pending'),
+        _detailRow('服务器', t['server_ip'] ?? '未分配'),
         _detailRow('创建时间', _formatDate(t['created_at'] ?? '')),
       ]))),
       actions: [
@@ -490,7 +507,7 @@ class _SaasTenantPageState extends State<SaasTenantPage> {
           child: const Row(children: [
             Icon(Icons.info_outline, size: 16, color: AppColors.error),
             SizedBox(width: 8),
-            Expanded(child: Text('此操作不可恢复，该租户的所有数据将被永久删除。', style: TextStyle(fontSize: 13, color: AppColors.error))),
+            Expanded(child: Text('此操作不可恢复，该租户的所有平台记录将被永久删除。\n注意：企业服务器上的数据不会被自动清除。', style: TextStyle(fontSize: 13, color: AppColors.error))),
           ]),
         ),
       ]),
@@ -502,10 +519,12 @@ class _SaasTenantPageState extends State<SaasTenantPage> {
             final res = await ApiService.saasDeleteTenant(t['id']);
             if (res.isSuccess) {
               _loadTenants();
-              if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('租户已删除'), behavior: SnackBarBehavior.floating));
+              if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('租户已删除'), behavior: SnackBarBehavior.floating, backgroundColor: AppColors.success));
+            } else {
+              if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('删除失败: ${res.message}'), behavior: SnackBarBehavior.floating, backgroundColor: AppColors.error));
             }
           },
-          style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+          style: ElevatedButton.styleFrom(backgroundColor: AppColors.error, foregroundColor: Colors.white),
           child: const Text('确认删除'),
         ),
       ],

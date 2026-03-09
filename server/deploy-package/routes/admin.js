@@ -152,9 +152,32 @@ router.get('/settings', verifyToken, requireRole('enterprise_admin'), (req, res)
 
 router.put('/settings', verifyToken, requireRole('enterprise_admin'), (req, res) => {
   try {
-    const { require_approval, allow_group_creation, allow_file_sharing, message_recall_timeout, max_file_size, max_group_members, watermark_enabled, enterprise_name } = req.body;
-    db.prepare(`UPDATE settings SET require_approval=COALESCE(?,require_approval), allow_group_creation=COALESCE(?,allow_group_creation), allow_file_sharing=COALESCE(?,allow_file_sharing), message_recall_timeout=COALESCE(?,message_recall_timeout), max_file_size=COALESCE(?,max_file_size), max_group_members=COALESCE(?,max_group_members), watermark_enabled=COALESCE(?,watermark_enabled), enterprise_name=COALESCE(?,enterprise_name), updated_at=CURRENT_TIMESTAMP`)
-      .run(require_approval, allow_group_creation, allow_file_sharing, message_recall_timeout, max_file_size, max_group_members, watermark_enabled, enterprise_name);
+    // 所有可更新的设置字段
+    const fields = [
+      'require_approval', 'allow_group_creation', 'allow_file_sharing',
+      'message_recall_timeout', 'max_file_size', 'max_group_members',
+      'watermark_enabled', 'enterprise_name',
+      // 聊天功能开关
+      'enable_voice_message', 'enable_image_send', 'enable_video_send',
+      'enable_emoji', 'enable_voice_call', 'enable_video_call',
+      'enable_read_receipt', 'enable_msg_recall', 'enable_file_send',
+      // 工作台功能开关
+      'enable_workbench', 'enable_schedule', 'enable_task',
+      'enable_cloud_drive', 'enable_approval', 'enable_attendance',
+      'enable_meeting_room', 'enable_announcement', 'enable_voting',
+      'enable_expense', 'enable_calendar', 'enable_report', 'enable_analytics'
+    ];
+    const setClauses = [];
+    const values = [];
+    fields.forEach(field => {
+      if (req.body[field] !== undefined && req.body[field] !== null) {
+        setClauses.push(`${field}=?`);
+        values.push(req.body[field]);
+      }
+    });
+    if (setClauses.length === 0) return res.json({ code: 400, message: '没有需要更新的字段' });
+    setClauses.push('updated_at=CURRENT_TIMESTAMP');
+    db.prepare(`UPDATE settings SET ${setClauses.join(', ')}`).run(...values);
     res.json({ code: 200, message: '设置已保存' });
   } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
 });

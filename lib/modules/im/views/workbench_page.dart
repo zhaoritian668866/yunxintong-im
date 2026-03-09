@@ -10,37 +10,81 @@ class WorkbenchPage extends StatefulWidget {
 }
 
 class _WorkbenchPageState extends State<WorkbenchPage> {
+  Map<String, dynamic> _features = {};
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFeatures();
+  }
+
+  Future<void> _loadFeatures() async {
+    final res = await ApiService.getFeatures();
+    if (mounted) {
+      setState(() {
+        if (res.isSuccess && res.data != null) {
+          _features = Map<String, dynamic>.from(res.data);
+        }
+        _loading = false;
+      });
+    }
+  }
+
+  bool _isEnabled(String key) => _features[key] != false;
+
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AppBar(title: const Text('工作台'), automaticallyImplyLeading: false),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    // 根据功能开关过滤模块
+    final commonApps = <_AppItem>[
+      if (_isEnabled('enable_schedule')) _AppItem(icon: Icons.event_note, label: '日程', color: AppColors.primary, onTap: () => _openSchedule(context)),
+      if (_isEnabled('enable_task')) _AppItem(icon: Icons.task_alt, label: '任务', color: AppColors.success, onTap: () => _openTasks(context)),
+      if (_isEnabled('enable_cloud_drive')) _AppItem(icon: Icons.cloud_upload, label: '云盘', color: AppColors.warning, onTap: () => _openCloudDrive(context)),
+      if (_isEnabled('enable_approval')) _AppItem(icon: Icons.how_to_vote, label: '审批', color: AppColors.info, onTap: () => _openApproval(context)),
+    ];
+
+    final officeTools = <_AppItem>[
+      if (_isEnabled('enable_attendance')) _AppItem(icon: Icons.access_time, label: '考勤', color: AppColors.primary, onTap: () => _openAttendance(context)),
+      if (_isEnabled('enable_meeting_room')) _AppItem(icon: Icons.meeting_room, label: '会议室', color: AppColors.success, onTap: () => _openMeetingRoom(context)),
+      if (_isEnabled('enable_announcement')) _AppItem(icon: Icons.announcement, label: '公告', color: AppColors.error, onTap: () => _openAnnouncements(context)),
+      if (_isEnabled('enable_voting')) _AppItem(icon: Icons.poll, label: '投票', color: AppColors.warning, onTap: () => _openVoting(context)),
+      if (_isEnabled('enable_expense')) _AppItem(icon: Icons.receipt_long, label: '报销', color: AppColors.info, onTap: () => _openExpense(context)),
+      if (_isEnabled('enable_calendar')) _AppItem(icon: Icons.calendar_month, label: '日历', color: AppColors.primary, onTap: () => _openCalendar(context)),
+    ];
+
+    final dataStats = <_AppItem>[
+      if (_isEnabled('enable_report')) _AppItem(icon: Icons.bar_chart, label: '报表', color: AppColors.primary, onTap: () => _openReports(context)),
+      if (_isEnabled('enable_analytics')) _AppItem(icon: Icons.pie_chart, label: '分析', color: AppColors.success, onTap: () => _openAnalytics(context)),
+    ];
+
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(title: const Text('工作台'), automaticallyImplyLeading: false),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // 常用应用
-          _buildSection('常用应用', [
-            _AppItem(icon: Icons.event_note, label: '日程', color: AppColors.primary, onTap: () => _openSchedule(context)),
-            _AppItem(icon: Icons.task_alt, label: '任务', color: AppColors.success, onTap: () => _openTasks(context)),
-            _AppItem(icon: Icons.cloud_upload, label: '云盘', color: AppColors.warning, onTap: () => _openCloudDrive(context)),
-            _AppItem(icon: Icons.how_to_vote, label: '审批', color: AppColors.info, onTap: () => _openApproval(context)),
-          ]),
-          const SizedBox(height: 16),
-          // 办公工具
-          _buildSection('办公工具', [
-            _AppItem(icon: Icons.access_time, label: '考勤', color: AppColors.primary, onTap: () => _openAttendance(context)),
-            _AppItem(icon: Icons.meeting_room, label: '会议室', color: AppColors.success, onTap: () => _openMeetingRoom(context)),
-            _AppItem(icon: Icons.announcement, label: '公告', color: AppColors.error, onTap: () => _openAnnouncements(context)),
-            _AppItem(icon: Icons.poll, label: '投票', color: AppColors.warning, onTap: () => _openVoting(context)),
-            _AppItem(icon: Icons.receipt_long, label: '报销', color: AppColors.info, onTap: () => _openExpense(context)),
-            _AppItem(icon: Icons.calendar_month, label: '日历', color: AppColors.primary, onTap: () => _openCalendar(context)),
-          ]),
-          const SizedBox(height: 16),
-          // 数据统计
-          _buildSection('数据统计', [
-            _AppItem(icon: Icons.bar_chart, label: '报表', color: AppColors.primary, onTap: () => _openReports(context)),
-            _AppItem(icon: Icons.pie_chart, label: '分析', color: AppColors.success, onTap: () => _openAnalytics(context)),
-          ]),
+          if (commonApps.isNotEmpty) ...[_buildSection('常用应用', commonApps), const SizedBox(height: 16)],
+          if (officeTools.isNotEmpty) ...[_buildSection('办公工具', officeTools), const SizedBox(height: 16)],
+          if (dataStats.isNotEmpty) ...[_buildSection('数据统计', dataStats), const SizedBox(height: 16)],
+          if (commonApps.isEmpty && officeTools.isEmpty && dataStats.isEmpty)
+            Center(child: Padding(
+              padding: const EdgeInsets.all(48),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.apps, size: 64, color: Colors.grey.shade300),
+                const SizedBox(height: 16),
+                Text('暂无可用的工作台应用', style: TextStyle(color: Colors.grey.shade500, fontSize: 16)),
+                const SizedBox(height: 8),
+                Text('请联系管理员开启相关功能', style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
+              ]),
+            )),
         ],
       ),
     );

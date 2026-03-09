@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="/">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="云信通IM - 企业即时通讯">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="云信通IM">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>云信通IM</title>
+  <link rel="manifest" href="manifest.json">
+
+  <script>
+    // ========== 新消息提示音系统 ==========
+    var _audioCtx = null;
+    var _audioReady = false;
+
+    // 初始化或恢复AudioContext
+    function _ensureAudioReady() {
+      try {
+        if (!_audioCtx) {
+          _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (_audioCtx.state === 'running') {
+          _audioReady = true;
+          return true;
+        }
+        if (_audioCtx.state === 'suspended') {
+          _audioCtx.resume().then(function() {
+            _audioReady = (_audioCtx.state === 'running');
+          });
+        }
+        return _audioReady;
+      } catch(e) {
+        return false;
+      }
+    }
+
+    // 播放三连音"叮叮叮"提示音
+    function _doPlay() {
+      if (!_audioCtx || _audioCtx.state !== 'running') return;
+      try {
+        var t = _audioCtx.currentTime;
+        var freqs = [880, 1318.5, 1760];
+        var starts = [0, 0.18, 0.36];
+        var durs = [0.15, 0.15, 0.2];
+        for (var i = 0; i < 3; i++) {
+          var osc = _audioCtx.createOscillator();
+          var gain = _audioCtx.createGain();
+          osc.connect(gain);
+          gain.connect(_audioCtx.destination);
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freqs[i], t + starts[i]);
+          gain.gain.setValueAtTime(0, t + starts[i]);
+          gain.gain.linearRampToValueAtTime(0.5, t + starts[i] + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.01, t + starts[i] + durs[i]);
+          osc.start(t + starts[i]);
+          osc.stop(t + starts[i] + durs[i] + 0.05);
+        }
+      } catch(e) {}
+    }
+
+    // Flutter通过JS interop调用此函数
+    window.playNotificationSound = function() {
+      // 每次调用都尝试确保AudioContext就绪
+      if (_audioReady && _audioCtx && _audioCtx.state === 'running') {
+        _doPlay();
+      } else {
+        // 尝试resume后播放
+        try {
+          if (!_audioCtx) {
+            _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          }
+          if (_audioCtx.state === 'suspended') {
+            _audioCtx.resume().then(function() {
+              _audioReady = (_audioCtx.state === 'running');
+              if (_audioReady) _doPlay();
+            });
+          } else if (_audioCtx.state === 'running') {
+            _audioReady = true;
+            _doPlay();
+          }
+        } catch(e) {}
+      }
+    };
+
+    // 浏览器通知
+    window.showBrowserNotification = function(title, body) {
+      try {
+        if (typeof Notification !== 'undefined') {
+          if (Notification.permission === 'granted') {
+            new Notification(title, { body: body, icon: 'favicon.png', tag: 'im-msg' });
+          } else if (Notification.permission !== 'denied') {
+            Notification.requestPermission().then(function(p) {
+              if (p === 'granted') new Notification(title, { body: body, icon: 'favicon.png', tag: 'im-msg' });
+            });
+          }
+        }
+      } catch(e) {}
+    };
+
+    // ========== 用户交互初始化 ==========
+    // 浏览器要求AudioContext必须在用户交互后才能resume
+    // 不使用once，持续监听直到AudioContext就绪
+    function _tryInitAudio() {
+      if (_audioReady) return;
+      try {
+        if (!_audioCtx) {
+          _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (_audioCtx.state === 'running') {
+          _audioReady = true;
+          return;
+        }
+        _audioCtx.resume().then(function() {
+          if (_audioCtx.state === 'running') {
+            _audioReady = true;
+            // 播放静音来预热音频管道
+            try {
+              var osc = _audioCtx.createOscillator();
+              var g = _audioCtx.createGain();
+              osc.connect(g);
+              g.connect(_audioCtx.destination);
+              g.gain.setValueAtTime(0, _audioCtx.currentTime);
+              osc.start(_audioCtx.currentTime);
+              osc.stop(_audioCtx.currentTime + 0.001);
+            } catch(e) {}
+          }
+        });
+      } catch(e) {}
+      
+      // 请求通知权限
+      if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+        try { Notification.requestPermission(); } catch(e) {}
+      }
+    }
+
+    // 持续监听用户交互（不用once，因为Flutter可能拦截早期事件）
+    ['click', 'touchstart', 'keydown', 'mousedown', 'pointerdown'].forEach(function(evt) {
+      document.addEventListener(evt, _tryInitAudio, { capture: true });
+    });
+    
+    // 定时检查AudioContext状态
+    var _checkTimer = setInterval(function() {
+      if (_audioCtx && _audioCtx.state === 'running') {
+        _audioReady = true;
+        clearInterval(_checkTimer);
+      } else {
+        _tryInitAudio();
+      }
+    }, 2000);
+    
+    // 60秒后停止定时检查（但事件监听器保留）
+    setTimeout(function() { clearInterval(_checkTimer); }, 60000);
+  </script>
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

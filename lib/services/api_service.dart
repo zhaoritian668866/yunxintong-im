@@ -109,21 +109,22 @@ class ApiService {
 
   // ==================== 通用请求方法 ====================
 
-  static Future<ApiResponse> _request(String method, String url, {Map<String, dynamic>? body, String? token}) async {
+  static Future<ApiResponse> _request(String method, String url, {Map<String, dynamic>? body, String? token, Duration? timeout}) async {
     try {
       final uri = Uri.parse(url);
       final headers = <String, String>{'Content-Type': 'application/json'};
       if (token != null && token.isNotEmpty) headers['Authorization'] = 'Bearer $token';
+      final dur = timeout ?? const Duration(seconds: 30);
 
       http.Response response;
       if (method == 'GET') {
-        response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 15));
+        response = await http.get(uri, headers: headers).timeout(dur);
       } else if (method == 'POST') {
-        response = await http.post(uri, headers: headers, body: body != null ? jsonEncode(body) : null).timeout(const Duration(seconds: 15));
+        response = await http.post(uri, headers: headers, body: body != null ? jsonEncode(body) : null).timeout(dur);
       } else if (method == 'PUT') {
-        response = await http.put(uri, headers: headers, body: body != null ? jsonEncode(body) : null).timeout(const Duration(seconds: 15));
+        response = await http.put(uri, headers: headers, body: body != null ? jsonEncode(body) : null).timeout(dur);
       } else if (method == 'DELETE') {
-        response = await http.delete(uri, headers: headers).timeout(const Duration(seconds: 15));
+        response = await http.delete(uri, headers: headers).timeout(dur);
       } else {
         return ApiResponse(code: 500, message: '不支持的请求方法');
       }
@@ -172,8 +173,12 @@ class ApiService {
     return _request('PUT', '$saasBaseUrl/saas/tenants/$id', body: data, token: _saasToken);
   }
 
-  static Future<ApiResponse> saasDeleteTenant(String id) async {
+  static Future<ApiResponse> saasDeleteTenant(dynamic id) async {
     return _request('DELETE', '$saasBaseUrl/saas/tenants/$id', token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasDeleteServer(dynamic id) async {
+    return _request('DELETE', '$saasBaseUrl/saas/servers/$id', token: _saasToken);
   }
 
   static Future<ApiResponse> saasServers() async {
@@ -187,9 +192,8 @@ class ApiService {
   static Future<ApiResponse> saasUpdateServer(String id, Map<String, dynamic> data) async {
     return _request('PUT', '$saasBaseUrl/saas/servers/$id', body: data, token: _saasToken);
   }
-
-  static Future<ApiResponse> saasDeleteServer(String id) async {
-    return _request('DELETE', '$saasBaseUrl/saas/servers/$id', token: _saasToken);
+  static Future<ApiResponse> saasTestServer(String id) async {
+    return _request('POST', '$saasBaseUrl/saas/servers/$id/test', token: _saasToken, timeout: const Duration(seconds: 30));
   }
 
   static Future<ApiResponse> saasDeployLogs() async {
@@ -203,7 +207,12 @@ class ApiService {
     } else if (serverInfo is Map) {
       body.addAll(Map<String, dynamic>.from(serverInfo));
     }
-    return _request('POST', '$saasBaseUrl/saas/deploy', body: body, token: _saasToken);
+    // 部署操作需要更长的超时时间（5分钟）
+    return _request('POST', '$saasBaseUrl/saas/deploy', body: body, token: _saasToken, timeout: const Duration(minutes: 5));
+  }
+
+  static Future<ApiResponse> saasUndeploy(String tenantId) async {
+    return _request('POST', '$saasBaseUrl/saas/undeploy', body: {'tenant_id': tenantId}, token: _saasToken, timeout: const Duration(minutes: 2));
   }
 
   static Future<ApiResponse> saasUndeployedTenants() async {
@@ -244,8 +253,53 @@ class ApiService {
     return _request('GET', '$_entApiBase/im/messages/$conversationId?page=$page', token: _userToken);
   }
 
-  static Future<ApiResponse> sendMessage(String conversationId, String content, {String type = 'text'}) async {
-    return _request('POST', '$_entApiBase/im/messages', body: {'conversation_id': conversationId, 'content': content, 'type': type}, token: _userToken);
+  static Future<ApiResponse> sendMessage(String conversationId, String content, {String type = 'text', String? fileUrl, String? fileName, List<String>? images, int? duration, String? thumbnail}) async {
+    final body = <String, dynamic>{'conversation_id': conversationId, 'content': content, 'type': type};
+    if (fileUrl != null) body['file_url'] = fileUrl;
+    if (fileName != null) body['file_name'] = fileName;
+    if (images != null) body['images'] = images;
+    if (duration != null) body['duration'] = duration;
+    if (thumbnail != null) body['thumbnail'] = thumbnail;
+    return _request('POST', '$_entApiBase/im/messages', body: body, token: _userToken);
+  }
+
+  // 获取功能开关
+  static Future<ApiResponse> getFeatures() async {
+    return _request('GET', '$_entApiBase/api/features', token: _userToken);
+  }
+
+  // 文件上传（通过multipart/form-data）
+  static Future<ApiResponse> uploadFile(List<int> bytes, String fileName, {String type = 'images'}) async {
+    try {
+      final uri = Uri.parse('$_entApiBase/upload/$type');
+      final request = http.MultipartRequest('POST', uri);
+      if (_userToken.isNotEmpty) request.headers['Authorization'] = 'Bearer $_userToken';
+      request.files.add(http.MultipartFile.fromBytes('file', bytes, filename: fileName));
+      final streamedResponse = await request.send().timeout(const Duration(seconds: 60));
+      final response = await http.Response.fromStream(streamedResponse);
+      final json = jsonDecode(utf8.decode(response.bodyBytes));
+      return ApiResponse.fromJson(json);
+    } catch (e) {
+      return ApiResponse(code: 500, message: '上传失败: $e');
+    }
+  }
+
+  // 多图上传（最多9张）
+  static Future<ApiResponse> uploadMultipleImages(List<List<int>> bytesList, List<String> fileNames) async {
+    try {
+      final uri = Uri.parse('$_entApiBase/upload/images/multiple');
+      final request = http.MultipartRequest('POST', uri);
+      if (_userToken.isNotEmpty) request.headers['Authorization'] = 'Bearer $_userToken';
+      for (int i = 0; i < bytesList.length && i < 9; i++) {
+        request.files.add(http.MultipartFile.fromBytes('images', bytesList[i], filename: fileNames[i]));
+      }
+      final streamedResponse = await request.send().timeout(const Duration(seconds: 120));
+      final response = await http.Response.fromStream(streamedResponse);
+      final json = jsonDecode(utf8.decode(response.bodyBytes));
+      return ApiResponse.fromJson(json);
+    } catch (e) {
+      return ApiResponse(code: 500, message: '上传失败: $e');
+    }
   }
 
   static Future<ApiResponse> recallMessage(String messageId) async {
@@ -460,4 +514,7 @@ class ApiService {
   static Future<ApiResponse> enterpriseUpdateDepartment(dynamic id, Map<String, dynamic> data) => adminUpdateDepartment(id.toString(), data);
   static Future<ApiResponse> enterpriseDeleteDepartment(dynamic id) => adminDeleteDepartment(id.toString());
   static Future<ApiResponse> enterpriseGetChatRecords({String? keyword, String? senderId, int page = 1, String? type}) => adminChatConversations(type: type, keyword: keyword, page: page);
+
+  // 获取企业文件上传基础URL
+  static String get uploadBaseUrl => _entApiBase;
 }

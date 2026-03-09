@@ -49,25 +49,35 @@ router.get('/messages/:conversationId', verifyToken, (req, res) => {
       FROM messages m LEFT JOIN users u ON m.sender_id = u.id
       WHERE m.conversation_id = ? ORDER BY m.created_at DESC LIMIT ? OFFSET ?
     `).all(req.params.conversationId, Number(pageSize), (Number(page) - 1) * Number(pageSize));
+    // 解析images字段
+    messages.forEach(m => { if (m.images) { try { m.images = JSON.parse(m.images); } catch(_){} } });
     db.prepare('UPDATE conversation_members SET unread_count=0, last_read_at=CURRENT_TIMESTAMP WHERE conversation_id=? AND user_id=?').run(req.params.conversationId, req.user.id);
     res.json({ code: 200, data: { total, list: messages.reverse() } });
   } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
 });
 
-// 发送消息
+// 发送消息（支持text/image/video/voice/file/mixed类型）
+// mixed类型：content为文字，images为JSON数组（最多9张图片URL）
 router.post('/messages', verifyToken, (req, res) => {
   try {
-    const { conversation_id, type, content, file_url, file_name, reply_to } = req.body;
-    if (!conversation_id || !content) return res.json({ code: 400, message: '会话ID和消息内容不能为空' });
+    const { conversation_id, type, content, file_url, file_name, reply_to, images, duration, thumbnail } = req.body;
+    if (!conversation_id) return res.json({ code: 400, message: '会话ID不能为空' });
+    const msgType = type || 'text';
+    if (msgType === 'text' && !content) return res.json({ code: 400, message: '消息内容不能为空' });
+    if (['image', 'video', 'voice', 'file'].includes(msgType) && !file_url) return res.json({ code: 400, message: '文件URL不能为空' });
+    if (msgType === 'mixed' && !content && (!images || images.length === 0)) return res.json({ code: 400, message: '图文消息至少需要文字或图片' });
+    if (images && images.length > 9) return res.json({ code: 400, message: '最多发送9张图片' });
     const member = db.prepare('SELECT id FROM conversation_members WHERE conversation_id=? AND user_id=?').get(conversation_id, req.user.id);
     if (!member) return res.json({ code: 403, message: '您不是该会话的成员' });
     const msgId = uuidv4();
     const createdAt = new Date().toISOString();
-    db.prepare('INSERT INTO messages (id,conversation_id,sender_id,type,content,file_url,file_name,reply_to,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(msgId, conversation_id, req.user.id, type || 'text', content, file_url || null, file_name || null, reply_to || null, createdAt);
+    const imagesStr = (images && Array.isArray(images)) ? JSON.stringify(images) : null;
+    db.prepare(`INSERT INTO messages (id,conversation_id,sender_id,type,content,file_url,file_name,duration,thumbnail_url,images,reply_to,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(msgId, conversation_id, req.user.id, msgType, content || '', file_url || null, file_name || null, duration || null, thumbnail || null, imagesStr, reply_to || null, createdAt);
     db.prepare('UPDATE conversation_members SET unread_count=unread_count+1 WHERE conversation_id=? AND user_id!=?').run(conversation_id, req.user.id);
     db.prepare('UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?').run(conversation_id);
     const msg = db.prepare('SELECT m.*, u.nickname as sender_name, u.avatar as sender_avatar FROM messages m LEFT JOIN users u ON m.sender_id=u.id WHERE m.id=?').get(msgId);
+    if (msg && msg.images) { try { msg.images = JSON.parse(msg.images); } catch(_){} }
     res.json({ code: 200, message: '发送成功', data: msg });
   } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
 });

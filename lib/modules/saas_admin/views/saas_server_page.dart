@@ -159,11 +159,13 @@ class _SaasServerPageState extends State<SaasServerPage> {
             icon: const Icon(Icons.more_vert, size: 18, color: AppColors.textSecondary),
             onSelected: (v) {
               switch (v) {
+                case 'test': _testServerConnection(server);
                 case 'edit': _showEditServerDialog(server);
                 case 'delete': _deleteServer(server);
               }
             },
             itemBuilder: (_) => [
+              const PopupMenuItem(value: 'test', child: Row(children: [Icon(Icons.wifi_tethering, size: 16, color: AppColors.success), SizedBox(width: 8), Text('测试连接')])),
               const PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit, size: 16, color: AppColors.primary), SizedBox(width: 8), Text('编辑')])),
               const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete, size: 16, color: AppColors.error), SizedBox(width: 8), Text('删除', style: TextStyle(color: AppColors.error))])),
             ],
@@ -322,6 +324,48 @@ class _SaasServerPageState extends State<SaasServerPage> {
         }, child: const Text('保存')),
       ],
     ));
+  }
+
+  void _testServerConnection(Map<String, dynamic> server) async {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Row(children: [
+        const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+        const SizedBox(width: 12),
+        Text('正在测试连接 ${server['name']}...'),
+      ]),
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 30),
+    ));
+
+    final res = await ApiService.saasTestServer(server['id'].toString());
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    if (res.isSuccess) {
+      _loadServers();
+      showDialog(context: context, builder: (ctx) => AlertDialog(
+        title: const Row(children: [
+          Icon(Icons.check_circle, color: AppColors.success),
+          SizedBox(width: 8),
+          Text('SSH连接成功'),
+        ]),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        content: Container(
+          width: 450,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(8)),
+          child: Text(res.data?['output']?.toString() ?? 'OK', style: const TextStyle(color: Color(0xFF4EC9B0), fontSize: 12, fontFamily: 'monospace')),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('关闭'))],
+      ));
+    } else {
+      _loadServers();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('SSH连接失败: ${res.message}'),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.error,
+      ));
+    }
   }
 
   void _deleteServer(Map<String, dynamic> s) {
