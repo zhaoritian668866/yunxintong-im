@@ -7,6 +7,7 @@ import 'saas_server_page.dart';
 import 'saas_deploy_page.dart';
 import 'saas_orders_page.dart';
 import 'saas_settings_page.dart';
+import 'saas_packages_page.dart';
 
 class SaasAdminPage extends StatefulWidget {
   const SaasAdminPage({super.key});
@@ -23,6 +24,7 @@ class _SaasAdminPageState extends State<SaasAdminPage> {
     AdminMenuItem(icon: Icons.business_outlined, label: '租户管理', route: 'tenants'),
     AdminMenuItem(icon: Icons.dns_outlined, label: '服务器管理', route: 'servers'),
     AdminMenuItem(icon: Icons.rocket_launch_outlined, label: '一键部署', route: 'deploy'),
+    AdminMenuItem(icon: Icons.inventory_2_outlined, label: '部署包管理', route: 'packages'),
     AdminMenuItem(icon: Icons.receipt_long_outlined, label: '订单管理', route: 'orders'),
     AdminMenuItem(icon: Icons.settings_outlined, label: '系统设置', route: 'settings'),
   ];
@@ -32,6 +34,7 @@ class _SaasAdminPageState extends State<SaasAdminPage> {
     SaasTenantPage(),
     SaasServerPage(),
     SaasDeployPage(),
+    SaasPackagesPage(),
     SaasOrdersPage(),
     SaasSettingsPage(),
   ];

@@ -309,14 +309,33 @@ router.post('/deploy', verifyToken, requireRole('saas_admin'), async (req, res) 
   // 更新租户状态为部署中
   db.prepare("UPDATE tenants SET deploy_status='deploying', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(tenant_id);
 
+  // 解析部署包版本
+  let packageDirName = 'deploy-package'; // 默认标准版
+  let packageName = '标准版';
+  if (tenant.package_id) {
+    const pkg = db.prepare('SELECT * FROM deploy_packages WHERE id = ?').get(tenant.package_id);
+    if (pkg) {
+      packageDirName = pkg.dir_name;
+      packageName = `${pkg.name} v${pkg.version}`;
+    }
+  } else {
+    // 未绑定部署包，自动绑定默认标准版
+    const defaultPkg = db.prepare('SELECT id FROM deploy_packages WHERE is_default = 1').get();
+    if (defaultPkg) {
+      db.prepare('UPDATE tenants SET package_id = ? WHERE id = ?').run(defaultPkg.id, tenant_id);
+      tenant.package_id = defaultPkg.id;
+    }
+  }
+
   log('========== 开始一键部署 ==========');
   log(`目标企业: ${tenant.name} (${tenant.enterprise_id})`);
+  log(`部署包: ${packageName}`);
   log(`目标服务器: ${server.name} (${server.ip_address}:${server.ssh_port || 22})`);
   log(`API端口: ${apiPort}`);
 
   try {
     // 通过SSH连接并执行部署
-    await sshDeploy(server, tenant, apiPort, log);
+    await sshDeploy(server, tenant, apiPort, log, packageDirName);
 
     const apiUrl = `http://${server.ip_address}:${apiPort}/api`;
     const adminUrl = `http://${server.ip_address}:${apiPort}`;
@@ -352,7 +371,7 @@ router.post('/deploy', verifyToken, requireRole('saas_admin'), async (req, res) 
 });
 
 // SSH部署核心逻辑
-function sshDeploy(server, tenant, apiPort, log) {
+function sshDeploy(server, tenant, apiPort, log, packageDirName) {
   return new Promise((resolve, reject) => {
     const conn = new Client();
     const connectConfig = {
@@ -379,7 +398,7 @@ function sshDeploy(server, tenant, apiPort, log) {
       log('[1/8] SSH连接成功');
 
       const deployDir = `/opt/yunxintong/${tenant.enterprise_id}`;
-      const deployPackageDir = path.join(__dirname, '..', 'deploy-package');
+      const deployPackageDir = path.join(__dirname, '..', packageDirName || 'deploy-package');
 
       // 读取deploy-package中所有文件
       const filesToUpload = getAllFiles(deployPackageDir, deployPackageDir);
@@ -667,6 +686,411 @@ function sshUndeploy(server, tenant, log) {
     });
 
     conn.connect(connectConfig);
+  });
+}
+
+// ==================== 一键更新（SSH远程更新代码，保留数据） ====================
+
+// 更新单个租户
+router.post('/update-tenant', verifyToken, requireRole('saas_admin'), async (req, res) => {
+  const { tenant_id } = req.body;
+  if (!tenant_id) return res.json({ code: 400, message: '请指定租户' });
+
+  const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tenant_id);
+  if (!tenant) return res.json({ code: 404, message: '租户不存在' });
+  if (tenant.deploy_status !== 'deployed') return res.json({ code: 400, message: '该租户尚未部署，请先进行一键部署' });
+
+  const server = tenant.server_id ? db.prepare('SELECT * FROM servers WHERE id = ?').get(tenant.server_id) : null;
+  if (!server) return res.json({ code: 404, message: '未找到关联的服务器' });
+
+  const logLines = [];
+  function log(msg) {
+    const line = `[${new Date().toISOString()}] ${msg}`;
+    logLines.push(line);
+    console.log(`[Update] ${msg}`);
+  }
+
+  // 解析部署包版本
+  let packageDirName = 'deploy-package';
+  let packageName = '标准版';
+  if (tenant.package_id) {
+    const pkg = db.prepare('SELECT * FROM deploy_packages WHERE id = ?').get(tenant.package_id);
+    if (pkg) {
+      packageDirName = pkg.dir_name;
+      packageName = `${pkg.name} v${pkg.version}`;
+    }
+  } else {
+    const defaultPkg = db.prepare('SELECT id FROM deploy_packages WHERE is_default = 1').get();
+    if (defaultPkg) {
+      db.prepare('UPDATE tenants SET package_id = ? WHERE id = ?').run(defaultPkg.id, tenant.id);
+    }
+  }
+
+  log('========== 开始一键更新 ==========');
+  log(`目标企业: ${tenant.name} (${tenant.enterprise_id})`);
+  log(`部署包: ${packageName}`);
+  log(`目标服务器: ${server.name} (${server.ip_address})`);
+
+  try {
+    await sshUpdate(server, tenant, log, packageDirName);
+    log('');
+    log('========== 更新完成 ==========');
+    log(`企业 ${tenant.name} (${tenant.enterprise_id}) 已更新到最新版本`);
+    res.json({ code: 200, message: '更新成功', data: { log: logLines } });
+  } catch (err) {
+    log(`更新失败: ${err.message}`);
+    res.json({ code: 500, message: '更新失败: ' + err.message, data: { log: logLines } });
+  }
+});
+
+// 更新全部已部署的租户
+router.post('/update-all', verifyToken, requireRole('saas_admin'), async (req, res) => {
+  const tenants = db.prepare("SELECT t.*, s.name as server_name, s.ip_address, s.ssh_port, s.ssh_user, s.ssh_password, s.ssh_key FROM tenants t LEFT JOIN servers s ON t.server_id = s.id WHERE t.deploy_status = 'deployed' AND t.server_id IS NOT NULL").all();
+  if (tenants.length === 0) return res.json({ code: 400, message: '没有已部署的租户' });
+
+  const results = [];
+  const allLogLines = [];
+
+  function log(msg) {
+    const line = `[${new Date().toISOString()}] ${msg}`;
+    allLogLines.push(line);
+    console.log(`[UpdateAll] ${msg}`);
+  }
+
+  log(`========== 开始批量更新 (共${tenants.length}个租户) ==========`);
+
+  for (let i = 0; i < tenants.length; i++) {
+    const tenant = tenants[i];
+    const server = {
+      ip_address: tenant.ip_address,
+      ssh_port: tenant.ssh_port,
+      ssh_user: tenant.ssh_user,
+      ssh_password: tenant.ssh_password,
+      ssh_key: tenant.ssh_key,
+      name: tenant.server_name
+    };
+
+    log(``);
+    // 解析每个租户的部署包版本
+    let pkgDirName = 'deploy-package';
+    let pkgName = '标准版';
+    if (tenant.package_id) {
+      const pkg = db.prepare('SELECT * FROM deploy_packages WHERE id = ?').get(tenant.package_id);
+      if (pkg) { pkgDirName = pkg.dir_name; pkgName = `${pkg.name} v${pkg.version}`; }
+    }
+    log(`--- [${i + 1}/${tenants.length}] ${tenant.name} (${tenant.enterprise_id}) @ ${server.ip_address} [部署包: ${pkgName}] ---`);
+
+    try {
+      await sshUpdate(server, tenant, log, pkgDirName);
+      results.push({ enterprise_id: tenant.enterprise_id, name: tenant.name, status: 'success' });
+      log(`[${i + 1}/${tenants.length}] ${tenant.name} 更新成功`);
+    } catch (err) {
+      results.push({ enterprise_id: tenant.enterprise_id, name: tenant.name, status: 'failed', error: err.message });
+      log(`[${i + 1}/${tenants.length}] ${tenant.name} 更新失败: ${err.message}`);
+    }
+  }
+
+  const successCount = results.filter(r => r.status === 'success').length;
+  const failCount = results.filter(r => r.status === 'failed').length;
+  log(``);
+  log(`========== 批量更新完成 ==========`);
+  log(`成功: ${successCount}, 失败: ${failCount}, 总计: ${tenants.length}`);
+
+  res.json({ code: 200, message: `更新完成: 成功${successCount}个, 失败${failCount}个`, data: { results, log: allLogLines } });
+});
+
+// SSH更新核心逻辑（只更新代码，保留data/uploads/node_modules/.env）
+function sshUpdate(server, tenant, log, packageDirName) {
+  return new Promise((resolve, reject) => {
+    const conn = new Client();
+    const connectConfig = {
+      host: server.ip_address,
+      port: server.ssh_port || 22,
+      username: server.ssh_user || 'root',
+      readyTimeout: 30000,
+      keepaliveInterval: 10000,
+      keepaliveCountMax: 5
+    };
+    if (server.ssh_key) {
+      connectConfig.privateKey = server.ssh_key;
+    } else if (server.ssh_password) {
+      connectConfig.password = server.ssh_password;
+    }
+
+    const updateTimeout = setTimeout(() => {
+      try { conn.end(); } catch(e) {}
+      reject(new Error('更新超时（5分钟）'));
+    }, 300000);
+
+    conn.on('ready', () => {
+      log('[1/5] SSH连接成功');
+
+      const deployDir = `/opt/yunxintong/${tenant.enterprise_id}`;
+      const deployPackageDir = path.join(__dirname, '..', packageDirName || 'deploy-package');
+
+      // 读取deploy-package中所有文件（排除node_modules/data/.git）
+      const filesToUpload = getAllFiles(deployPackageDir, deployPackageDir);
+
+      conn.sftp((err, sftp) => {
+        if (err) { clearTimeout(updateTimeout); conn.end(); return reject(new Error('SFTP连接失败: ' + err.message)); }
+
+        const doUpdate = async () => {
+          try {
+            // 检查部署目录是否存在
+            const checkDir = await sshExec(conn, `test -d ${deployDir} && echo "EXISTS" || echo "NOT_FOUND"`);
+            if (checkDir.includes('NOT_FOUND')) {
+              throw new Error(`部署目录 ${deployDir} 不存在，请先进行一键部署`);
+            }
+
+            // 停止PM2进程
+            log('[2/5] 停止服务...');
+            const pmName = `yxt-${tenant.enterprise_id}`;
+            await sshExec(conn, `pm2 stop ${pmName} 2>/dev/null || true`);
+            log(`  PM2进程 ${pmName} 已停止`);
+
+            // 上传更新的文件（跳过node_modules、data、uploads、.env）
+            log('[3/5] 上传更新文件...');
+            let uploadCount = 0;
+            let skipCount = 0;
+            for (const file of filesToUpload) {
+              // 跳过不需要更新的目录
+              if (file.relativePath.includes('node_modules/')) { skipCount++; continue; }
+              if (file.relativePath.startsWith('data/')) { skipCount++; continue; }
+              if (file.relativePath.startsWith('uploads/')) { skipCount++; continue; }
+              if (file.relativePath === '.env') { skipCount++; continue; }
+
+              const remotePath = `${deployDir}/${file.relativePath}`;
+              const remoteDir = path.dirname(remotePath);
+              await sshExec(conn, `mkdir -p ${remoteDir}`);
+              await sftpUpload(sftp, file.localPath, remotePath);
+              uploadCount++;
+              if (uploadCount % 10 === 0 || !file.relativePath.startsWith('public/canvaskit/')) {
+                log(`  更新: ${file.relativePath}`);
+              }
+            }
+            log(`[3/5] 文件更新完成 (更新${uploadCount}个, 跳过${skipCount}个)`);
+
+            // 检查是否需要安装新依赖（对比package.json）
+            log('[4/5] 检查并安装依赖...');
+            const installResult = await sshExec(conn, `cd ${deployDir} && npm install --production 2>&1 | tail -3`);
+            log(`  ${installResult.trim()}`);
+            log('[4/5] 依赖检查完成');
+
+            // 重启PM2进程
+            log('[5/5] 重启服务...');
+            await sshExec(conn, `cd ${deployDir} && pm2 restart ${pmName} 2>/dev/null || pm2 start index.js --name ${pmName}`);
+            await sshExec(conn, 'pm2 save 2>/dev/null');
+
+            // 等待3秒验证
+            await new Promise(r => setTimeout(r, 3000));
+            const apiPort = tenant.api_url ? new URL(tenant.api_url).port || 4001 : 4001;
+            const healthCheck = await sshExec(conn, `curl -s --connect-timeout 5 http://localhost:${apiPort}/api/health || echo "HEALTH_CHECK_FAILED"`);
+            if (healthCheck.includes('HEALTH_CHECK_FAILED')) {
+              log('[5/5] 服务重启中，健康检查暂未通过');
+            } else {
+              log('[5/5] 服务重启成功，健康检查通过');
+            }
+
+            clearTimeout(updateTimeout);
+            conn.end();
+            resolve();
+          } catch (e) {
+            // 更新失败时尝试重启服务
+            try {
+              const pmName = `yxt-${tenant.enterprise_id}`;
+              await sshExec(conn, `pm2 restart ${pmName} 2>/dev/null || true`);
+              log('  已尝试重启服务');
+            } catch(e2) {}
+            clearTimeout(updateTimeout);
+            conn.end();
+            reject(e);
+          }
+        };
+
+        doUpdate();
+      });
+    });
+
+    conn.on('error', (err) => {
+      clearTimeout(updateTimeout);
+      reject(new Error('SSH连接失败: ' + err.message));
+    });
+
+    conn.connect(connectConfig);
+  });
+}
+
+// ==================== 部署包版本管理 ====================
+
+// 获取所有部署包版本
+router.get('/packages', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const packages = db.prepare(`
+      SELECT p.*, 
+        (SELECT COUNT(*) FROM tenants WHERE package_id = p.id) as tenant_count
+      FROM deploy_packages p 
+      ORDER BY p.is_default DESC, p.created_at ASC
+    `).all();
+    // 检查每个部署包目录是否存在
+    const result = packages.map(pkg => {
+      const pkgDir = path.join(__dirname, '..', pkg.dir_name);
+      return { ...pkg, dir_exists: fs.existsSync(pkgDir) };
+    });
+    res.json({ code: 200, data: result });
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
+  }
+});
+
+// 获取单个部署包详情
+router.get('/packages/:id', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const pkg = db.prepare('SELECT * FROM deploy_packages WHERE id = ?').get(req.params.id);
+    if (!pkg) return res.json({ code: 404, message: '部署包不存在' });
+    const pkgDir = path.join(__dirname, '..', pkg.dir_name);
+    const dirExists = fs.existsSync(pkgDir);
+    // 获取绑定的租户列表
+    const tenants = db.prepare('SELECT id, enterprise_id, name, deploy_status FROM tenants WHERE package_id = ?').all(pkg.id);
+    res.json({ code: 200, data: { ...pkg, dir_exists: dirExists, tenants } });
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
+  }
+});
+
+// 创建新的部署包版本（基于现有版本复制）
+router.post('/packages', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const { name, version, description, base_package_id } = req.body;
+    if (!name) return res.json({ code: 400, message: '部署包名称不能为空' });
+
+    // 生成唯一目录名
+    const dirName = 'deploy-package-' + Date.now();
+    const pkgId = uuidv4();
+    const newPkgDir = path.join(__dirname, '..', dirName);
+
+    // 如果指定了基础包，复制其代码
+    if (base_package_id) {
+      const basePkg = db.prepare('SELECT * FROM deploy_packages WHERE id = ?').get(base_package_id);
+      if (!basePkg) return res.json({ code: 404, message: '基础部署包不存在' });
+      const baseDir = path.join(__dirname, '..', basePkg.dir_name);
+      if (!fs.existsSync(baseDir)) return res.json({ code: 404, message: '基础部署包目录不存在' });
+      // 复制目录（排除node_modules和data）
+      copyDirSync(baseDir, newPkgDir, ['node_modules', 'data', '.git', 'uploads']);
+    } else {
+      // 创建空目录结构
+      fs.mkdirSync(newPkgDir, { recursive: true });
+      fs.mkdirSync(path.join(newPkgDir, 'routes'), { recursive: true });
+      fs.mkdirSync(path.join(newPkgDir, 'models'), { recursive: true });
+      fs.mkdirSync(path.join(newPkgDir, 'middleware'), { recursive: true });
+      fs.mkdirSync(path.join(newPkgDir, 'public'), { recursive: true });
+    }
+
+    // 写入数据库
+    db.prepare(`INSERT INTO deploy_packages (id, name, version, description, dir_name, is_default, base_package_id, status) VALUES (?,?,?,?,?,?,?,?)`)
+      .run(pkgId, name, version || '1.0.0', description || '', dirName, 0, base_package_id || '', 'active');
+
+    res.json({ code: 200, message: '部署包创建成功', data: { id: pkgId, dir_name: dirName } });
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
+  }
+});
+
+// 更新部署包信息
+router.put('/packages/:id', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const { name, version, description, status } = req.body;
+    db.prepare(`UPDATE deploy_packages SET name=COALESCE(?,name), version=COALESCE(?,version), description=COALESCE(?,description), status=COALESCE(?,status), updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+      .run(name, version, description, status, req.params.id);
+    res.json({ code: 200, message: '更新成功' });
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
+  }
+});
+
+// 删除部署包
+router.delete('/packages/:id', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const pkg = db.prepare('SELECT * FROM deploy_packages WHERE id = ?').get(req.params.id);
+    if (!pkg) return res.json({ code: 404, message: '部署包不存在' });
+    if (pkg.is_default) return res.json({ code: 403, message: '不能删除默认标准版部署包' });
+    // 检查是否有租户在使用
+    const tenantCount = db.prepare('SELECT COUNT(*) as count FROM tenants WHERE package_id = ?').get(req.params.id).count;
+    if (tenantCount > 0) return res.json({ code: 400, message: `还有 ${tenantCount} 个租户在使用此部署包，请先切换其部署包版本` });
+    // 删除目录
+    const pkgDir = path.join(__dirname, '..', pkg.dir_name);
+    if (fs.existsSync(pkgDir)) {
+      fs.rmSync(pkgDir, { recursive: true, force: true });
+    }
+    db.prepare('DELETE FROM deploy_packages WHERE id = ?').run(req.params.id);
+    res.json({ code: 200, message: '删除成功' });
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
+  }
+});
+
+// 绑定租户到指定部署包
+router.post('/packages/bind', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const { tenant_id, package_id } = req.body;
+    if (!tenant_id || !package_id) return res.json({ code: 400, message: '请指定租户和部署包' });
+    const pkg = db.prepare('SELECT id, name FROM deploy_packages WHERE id = ?').get(package_id);
+    if (!pkg) return res.json({ code: 404, message: '部署包不存在' });
+    db.prepare('UPDATE tenants SET package_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(package_id, tenant_id);
+    res.json({ code: 200, message: `已绑定到部署包: ${pkg.name}` });
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
+  }
+});
+
+// 辅助函数：递归复制目录（排除指定目录）
+function copyDirSync(src, dest, excludeDirs = []) {
+  fs.mkdirSync(dest, { recursive: true });
+  const entries = fs.readdirSync(src, { withFileTypes: true });
+  for (const entry of entries) {
+    if (excludeDirs.includes(entry.name)) continue;
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirSync(srcPath, destPath, excludeDirs);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
+}
+
+// 获取部署包目录的文件列表（用于前端展示）
+router.get('/packages/:id/files', verifyToken, requireRole('saas_admin'), (req, res) => {
+  try {
+    const pkg = db.prepare('SELECT * FROM deploy_packages WHERE id = ?').get(req.params.id);
+    if (!pkg) return res.json({ code: 404, message: '部署包不存在' });
+    const pkgDir = path.join(__dirname, '..', pkg.dir_name);
+    if (!fs.existsSync(pkgDir)) return res.json({ code: 404, message: '部署包目录不存在' });
+    // 获取文件树（只展示前两层）
+    const tree = getFileTree(pkgDir, 2);
+    res.json({ code: 200, data: tree });
+  } catch (err) {
+    res.status(500).json({ code: 500, message: '服务器错误: ' + err.message });
+  }
+});
+
+function getFileTree(dir, maxDepth, currentDepth = 0) {
+  if (currentDepth >= maxDepth) return [];
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const result = [];
+  for (const entry of entries) {
+    if (entry.name === 'node_modules' || entry.name === '.git') continue;
+    const item = { name: entry.name, type: entry.isDirectory() ? 'dir' : 'file' };
+    if (entry.isDirectory()) {
+      item.children = getFileTree(path.join(dir, entry.name), maxDepth, currentDepth + 1);
+    } else {
+      const stat = fs.statSync(path.join(dir, entry.name));
+      item.size = stat.size;
+    }
+    result.push(item);
+  }
+  return result.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    return a.name.localeCompare(b.name);
   });
 }
 

@@ -106,6 +106,29 @@ function initDatabase() {
     )
   `);
 
+  // 部署包版本管理表
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS deploy_packages (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      version TEXT DEFAULT '1.0.0',
+      description TEXT DEFAULT '',
+      dir_name TEXT UNIQUE NOT NULL,
+      is_default INTEGER DEFAULT 0,
+      base_package_id TEXT DEFAULT '',
+      status TEXT DEFAULT 'active',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // 给tenants表添加package_id字段（如果不存在）
+  try {
+    db.exec(`ALTER TABLE tenants ADD COLUMN package_id TEXT DEFAULT ''`);
+  } catch(e) {
+    // 字段已存在，忽略
+  }
+
   // SaaS系统设置表
   db.exec(`
     CREATE TABLE IF NOT EXISTS saas_settings (
@@ -124,6 +147,7 @@ function initDatabase() {
   `);
 
   seedDefaultData();
+  seedDefaultPackage();
 }
 
 function seedDefaultData() {
@@ -143,6 +167,16 @@ function seedDefaultData() {
 
   console.log('✅ SaaS数据库初始化完成');
   console.log('   默认管理员: superadmin / 123456');
+}
+
+function seedDefaultPackage() {
+  // 初始化默认标准版部署包
+  const existing = db.prepare('SELECT id FROM deploy_packages WHERE dir_name = ?').get('deploy-package');
+  if (!existing) {
+    db.prepare(`INSERT INTO deploy_packages (id, name, version, description, dir_name, is_default, status) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(uuidv4(), '标准版', '1.0.0', '系统默认的标准部署包，包含完整的IM功能、企业管理后台、功能开关等', 'deploy-package', 1, 'active');
+    console.log('✅ 默认标准版部署包已初始化');
+  }
 }
 
 module.exports = { db, initDatabase };

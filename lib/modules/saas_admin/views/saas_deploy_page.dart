@@ -496,12 +496,26 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
           const Icon(Icons.history, color: AppColors.primary),
           const SizedBox(width: 8),
           const Text('已部署的租户', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-          const Spacer(),
+          const SizedBox(width: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
             child: Text('${deployed.length} 个', style: const TextStyle(color: AppColors.primary, fontSize: 12, fontWeight: FontWeight.w500)),
           ),
+          const Spacer(),
+          if (deployed.isNotEmpty)
+            ElevatedButton.icon(
+              onPressed: _isDeploying ? null : () => _confirmUpdateAll(deployed),
+              icon: const Icon(Icons.system_update_alt, size: 16),
+              label: const Text('全部更新'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurple,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                textStyle: const TextStyle(fontSize: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
         ]),
         const SizedBox(height: 16),
         if (deployed.isEmpty)
@@ -543,6 +557,19 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
                 child: Text(t['status'] == 'active' ? '运行中' : '已停用', style: TextStyle(color: t['status'] == 'active' ? AppColors.success : AppColors.error, fontSize: 12, fontWeight: FontWeight.w500)),
               ),
               const SizedBox(width: 10),
+              ElevatedButton.icon(
+                onPressed: _isDeploying ? null : () => _confirmUpdate(t),
+                icon: const Icon(Icons.system_update_alt, size: 16),
+                label: const Text('一键更新'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurple,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  textStyle: const TextStyle(fontSize: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+              ),
+              const SizedBox(width: 6),
               ElevatedButton.icon(
                 onPressed: () => _confirmUndeploy(t),
                 icon: const Icon(Icons.delete_sweep, size: 16),
@@ -710,6 +737,276 @@ class _SaasDeployPageState extends State<SaasDeployPage> {
         ),
       );
     }
+  }
+
+  // ==================== 一键更新 ====================
+
+  void _confirmUpdate(Map<String, dynamic> tenant) {
+    final name = tenant['name'] ?? '';
+    final eid = tenant['enterprise_id'] ?? '';
+    final serverIp = tenant['server_ip'] ?? '未知';
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(children: [
+          const Icon(Icons.system_update_alt, color: Colors.deepPurple, size: 28),
+          const SizedBox(width: 8),
+          const Text('确认一键更新'),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('确定要更新以下企业的后端代码吗？', style: TextStyle(fontSize: 15)),
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(color: Colors.deepPurple.withOpacity(0.05), borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.deepPurple.withOpacity(0.2))),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('企业名称: $name', style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Text('企业ID: $eid', style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+              Text('服务器: $serverIp', style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+            ]),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(color: Colors.blue.withOpacity(0.05), borderRadius: BorderRadius.circular(8)),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Icon(Icons.info_outline, color: Colors.blue, size: 18),
+              const SizedBox(width: 8),
+              Expanded(child: Text('更新操作将只更新代码文件，保留数据库、上传文件和配置信息。\n更新期间服务会短暂中断，更新完成后自动重启。',
+                style: TextStyle(fontSize: 12, color: Colors.blue.shade700))),
+            ]),
+          ),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          ElevatedButton(
+            onPressed: () { Navigator.pop(ctx); _doUpdate(tenant); },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple, foregroundColor: Colors.white),
+            child: const Text('确认更新'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmUpdateAll(List<Map<String, dynamic>> deployed) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(children: [
+          const Icon(Icons.system_update_alt, color: Colors.deepPurple, size: 28),
+          const SizedBox(width: 8),
+          const Text('确认全部更新'),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('确定要更新全部 ${deployed.length} 个已部署的租户吗？', style: const TextStyle(fontSize: 15)),
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(color: Colors.deepPurple.withOpacity(0.05), borderRadius: BorderRadius.circular(10)),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              ...deployed.map((t) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Text('• ${t['name']} (${t['enterprise_id']}) - ${t['server_ip'] ?? '未知'}',
+                  style: const TextStyle(fontSize: 13)),
+              )),
+            ]),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(color: Colors.blue.withOpacity(0.05), borderRadius: BorderRadius.circular(8)),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Icon(Icons.info_outline, color: Colors.blue, size: 18),
+              const SizedBox(width: 8),
+              Expanded(child: Text('每个租户将根据其绑定的部署包版本进行更新，\n标准版和定制版租户会分别使用对应的代码包。',
+                style: TextStyle(fontSize: 12, color: Colors.blue.shade700))),
+            ]),
+          ),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          ElevatedButton(
+            onPressed: () { Navigator.pop(ctx); _doUpdateAll(); },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple, foregroundColor: Colors.white),
+            child: Text('确认更新全部 (${deployed.length}个)'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _doUpdate(Map<String, dynamic> tenant) async {
+    final tenantId = tenant['id'].toString();
+    final tenantName = tenant['name'] ?? '';
+    final eid = tenant['enterprise_id'] ?? '';
+
+    // 显示更新进度对话框
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(children: [
+          const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.deepPurple)),
+          const SizedBox(width: 12),
+          Text('正在更新 $tenantName...'),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('正在连接服务器并更新代码文件，请稍候...'),
+          const SizedBox(height: 16),
+          const LinearProgressIndicator(color: Colors.deepPurple),
+        ]),
+      ),
+    );
+
+    final res = await ApiService.saasUpdateTenantCode(tenantId);
+
+    if (!mounted) return;
+    Navigator.of(context).pop(); // 关闭进度对话框
+
+    // 显示更新结果和日志
+    final logs = res.data?['log'];
+    final isSuccess = res.isSuccess || res.code == 200;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(children: [
+          Icon(isSuccess ? Icons.check_circle : Icons.error, color: isSuccess ? AppColors.success : AppColors.error, size: 28),
+          const SizedBox(width: 8),
+          Text(isSuccess ? '更新完成' : '更新失败'),
+        ]),
+        content: SizedBox(
+          width: 600,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('$tenantName ($eid) ${isSuccess ? "已更新到最新版本" : "更新失败"}', style: const TextStyle(fontWeight: FontWeight.w500)),
+            const SizedBox(height: 8),
+            Text(res.message, style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+            if (logs is List) ...[
+              const SizedBox(height: 12),
+              Container(
+                height: 250,
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(8)),
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    logs.join('\n'),
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: Colors.greenAccent, height: 1.5),
+                  ),
+                ),
+              ),
+            ],
+          ]),
+        ),
+        actions: [
+          ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('确定')),
+        ],
+      ),
+    );
+
+    if (isSuccess) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(children: [
+            const Icon(Icons.check_circle, color: Colors.white, size: 20),
+            const SizedBox(width: 8),
+            Text('$tenantName 更新成功'),
+          ]),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppColors.success,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+    }
+  }
+
+  void _doUpdateAll() async {
+    // 显示更新进度对话框
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(children: [
+          const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.deepPurple)),
+          const SizedBox(width: 12),
+          const Text('正在批量更新...'),
+        ]),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('正在连接服务器并更新全部已部署租户的代码，请稍候...\n每个租户将使用其绑定的部署包版本进行更新。'),
+          const SizedBox(height: 16),
+          const LinearProgressIndicator(color: Colors.deepPurple),
+        ]),
+      ),
+    );
+
+    final res = await ApiService.saasUpdateAllTenants();
+
+    if (!mounted) return;
+    Navigator.of(context).pop(); // 关闭进度对话框
+
+    final logs = res.data?['log'];
+    final results = res.data?['results'];
+    final isSuccess = res.isSuccess || res.code == 200;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(children: [
+          Icon(isSuccess ? Icons.check_circle : Icons.error, color: isSuccess ? AppColors.success : AppColors.error, size: 28),
+          const SizedBox(width: 8),
+          Text(isSuccess ? '批量更新完成' : '批量更新失败'),
+        ]),
+        content: SizedBox(
+          width: 600,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(res.message, style: const TextStyle(fontWeight: FontWeight.w500)),
+            if (results is List) ...[
+              const SizedBox(height: 12),
+              ...results.map((r) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(children: [
+                  Icon(r['status'] == 'success' ? Icons.check_circle : Icons.error,
+                    color: r['status'] == 'success' ? AppColors.success : AppColors.error, size: 16),
+                  const SizedBox(width: 6),
+                  Text('${r['name']} (${r['enterprise_id']})', style: const TextStyle(fontSize: 13)),
+                  const SizedBox(width: 6),
+                  Text(r['status'] == 'success' ? '成功' : '失败: ${r['error'] ?? ''}',
+                    style: TextStyle(fontSize: 12, color: r['status'] == 'success' ? AppColors.success : AppColors.error)),
+                ]),
+              )),
+            ],
+            if (logs is List) ...[
+              const SizedBox(height: 12),
+              Container(
+                height: 250,
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: const Color(0xFF1E1E1E), borderRadius: BorderRadius.circular(8)),
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    logs.join('\n'),
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 11, color: Colors.greenAccent, height: 1.5),
+                  ),
+                ),
+              ),
+            ],
+          ]),
+        ),
+        actions: [
+          ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('确定')),
+        ],
+      ),
+    );
   }
 
   void _startDeploy() async {

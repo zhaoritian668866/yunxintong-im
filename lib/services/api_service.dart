@@ -215,6 +215,45 @@ class ApiService {
     return _request('POST', '$saasBaseUrl/saas/undeploy', body: {'tenant_id': tenantId}, token: _saasToken, timeout: const Duration(minutes: 2));
   }
 
+  // 一键更新单个租户
+  static Future<ApiResponse> saasUpdateTenantCode(String tenantId) async {
+    return _request('POST', '$saasBaseUrl/saas/update-tenant', body: {'tenant_id': tenantId}, token: _saasToken, timeout: const Duration(minutes: 5));
+  }
+
+  // 一键更新全部租户
+  static Future<ApiResponse> saasUpdateAllTenants() async {
+    return _request('POST', '$saasBaseUrl/saas/update-all', token: _saasToken, timeout: const Duration(minutes: 15));
+  }
+
+  // 部署包版本管理
+  static Future<ApiResponse> saasGetPackages() async {
+    return _request('GET', '$saasBaseUrl/saas/packages', token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasGetPackage(String id) async {
+    return _request('GET', '$saasBaseUrl/saas/packages/$id', token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasCreatePackage(Map<String, dynamic> data) async {
+    return _request('POST', '$saasBaseUrl/saas/packages', body: data, token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasUpdatePackage(String id, Map<String, dynamic> data) async {
+    return _request('PUT', '$saasBaseUrl/saas/packages/$id', body: data, token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasDeletePackage(String id) async {
+    return _request('DELETE', '$saasBaseUrl/saas/packages/$id', token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasBindPackage(String tenantId, String packageId) async {
+    return _request('POST', '$saasBaseUrl/saas/packages/bind', body: {'tenant_id': tenantId, 'package_id': packageId}, token: _saasToken);
+  }
+
+  static Future<ApiResponse> saasGetPackageFiles(String id) async {
+    return _request('GET', '$saasBaseUrl/saas/packages/$id/files', token: _saasToken);
+  }
+
   static Future<ApiResponse> saasUndeployedTenants() async {
     return _request('GET', '$saasBaseUrl/saas/tenants/undeployed', token: _saasToken);
   }
