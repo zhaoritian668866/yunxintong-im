@@ -164,13 +164,16 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
   // 发送纯文本消息
   Future<void> _sendTextMessage() async {
     final text = _msgController.text.trim();
-    if (text.isEmpty || _sending) return;
 
-    // 如果有选中的图片，发送图文混合消息
+    // 如果有选中的图片，发送图文/纯图消息（文字可选）
     if (_selectedImages.isNotEmpty) {
+      if (_sending) return;
       await _sendMixedMessage(text);
       return;
     }
+
+    // 纯文本消息必须有文字
+    if (text.isEmpty || _sending) return;
 
     setState(() { _sending = true; });
     _msgController.clear();
@@ -206,11 +209,22 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
       return;
     }
 
+    // 确定消息类型：有图有文=mixed，只有图=image，只有文=text
+    String msgType;
+    if (imageUrls.isNotEmpty && text.isNotEmpty) {
+      msgType = 'mixed';
+    } else if (imageUrls.isNotEmpty) {
+      msgType = imageUrls.length == 1 ? 'image' : 'mixed';
+    } else {
+      msgType = 'text';
+    }
+
     final res = await ApiService.sendMessage(
       widget.conversationId,
-      text,
-      type: imageUrls.isNotEmpty ? 'mixed' : 'text',
-      images: imageUrls.isNotEmpty ? imageUrls : null,
+      text.isNotEmpty ? text : (imageUrls.length == 1 ? '[图片]' : '[图片 x${imageUrls.length}]'),
+      type: msgType,
+      fileUrl: imageUrls.length == 1 && msgType == 'image' ? imageUrls.first : null,
+      images: imageUrls.length > 1 || msgType == 'mixed' ? imageUrls : null,
     );
 
     if (!mounted) return;
