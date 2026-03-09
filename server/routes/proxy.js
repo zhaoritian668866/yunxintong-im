@@ -28,8 +28,9 @@ function getTenantApiUrl(enterprise_id) {
   return { api_url: tenant.api_url };
 }
 
-module.exports = function(rawBodyEnabled) {
-  // 通用代理转发（支持所有Content-Type，包括multipart/form-data文件上传）
+module.exports = function() {
+  // 通用代理转发（支持所有Content-Type，包括JSON和multipart/form-data文件上传）
+  // 重要：此路由必须注册在express.json()之前，这样所有请求体都以原始流的方式转发
   router.use('/', (req, res) => {
     try {
       const parsed = parseProxyPath(req.url);
@@ -46,7 +47,6 @@ module.exports = function(rawBodyEnabled) {
       // 对于 /uploads 路径，需要访问企业服务器的静态文件目录
       // api_url = http://ip:port/api，但 uploads 在 http://ip:port/uploads
       if (subPath.startsWith('uploads/') || subPath === 'uploads') {
-        // 去掉 api_url 末尾的 /api，直接访问根路径
         const baseUrl = targetUrl.replace(/\/api\/?$/, '');
         targetUrl = `${baseUrl}/${subPath}`;
       } else {
@@ -54,32 +54,19 @@ module.exports = function(rawBodyEnabled) {
       }
       if (queryString) targetUrl += '?' + queryString;
 
-      const contentType = req.headers['content-type'] || '';
-      const isFileUpload = contentType.includes('multipart/form-data');
-
-      console.log(`[Proxy] ${req.method} ${enterprise_id}/${subPath} => ${targetUrl}${isFileUpload ? ' [FILE UPLOAD]' : ''}`);
+      console.log(`[Proxy] ${req.method} ${enterprise_id}/${subPath} => ${targetUrl}`);
 
       const parsedUrl = new URL(targetUrl);
       const isHttps = parsedUrl.protocol === 'https:';
       const httpModule = isHttps ? https : http;
 
-      // 构建请求头
+      // 构建请求头 - 直接转发原始请求头中的关键字段
       const headers = {};
-      // 转发关键头部
       if (req.headers['content-type']) headers['content-type'] = req.headers['content-type'];
       if (req.headers['authorization']) headers['authorization'] = req.headers['authorization'];
       if (req.headers['accept']) headers['accept'] = req.headers['accept'];
+      if (req.headers['content-length']) headers['content-length'] = req.headers['content-length'];
       headers['host'] = parsedUrl.host;
-
-      // 对于非文件上传的JSON请求，需要序列化body
-      let bodyData = null;
-      if (!isFileUpload && req.body && Object.keys(req.body).length > 0) {
-        bodyData = JSON.stringify(req.body);
-        headers['content-type'] = 'application/json';
-        headers['content-length'] = Buffer.byteLength(bodyData).toString();
-      } else if (isFileUpload && req.headers['content-length']) {
-        headers['content-length'] = req.headers['content-length'];
-      }
 
       const options = {
         hostname: parsedUrl.hostname,
@@ -87,7 +74,7 @@ module.exports = function(rawBodyEnabled) {
         path: parsedUrl.pathname + (parsedUrl.search || ''),
         method: req.method,
         headers: headers,
-        timeout: 120000, // 文件上传需要更长超时
+        timeout: 120000,
         rejectUnauthorized: false
       };
 
@@ -96,6 +83,7 @@ module.exports = function(rawBodyEnabled) {
         const responseHeaders = {};
         if (proxyRes.headers['content-type']) responseHeaders['content-type'] = proxyRes.headers['content-type'];
         if (proxyRes.headers['content-disposition']) responseHeaders['content-disposition'] = proxyRes.headers['content-disposition'];
+        if (proxyRes.headers['content-length']) responseHeaders['content-length'] = proxyRes.headers['content-length'];
 
         res.writeHead(proxyRes.statusCode || 200, responseHeaders);
         // 流式转发响应体
@@ -116,19 +104,10 @@ module.exports = function(rawBodyEnabled) {
         }
       });
 
-      if (isFileUpload) {
-        // 文件上传：使用原始请求体流式转发
-        if (req.rawBody) {
-          // 如果有rawBody缓冲区，直接写入
-          proxyReq.write(req.rawBody);
-          proxyReq.end();
-        } else {
-          // 流式管道转发
-          req.pipe(proxyReq);
-        }
-      } else if (bodyData) {
-        proxyReq.write(bodyData);
-        proxyReq.end();
+      // 所有请求（包括JSON和文件上传）都使用流式转发
+      // 因为此路由注册在express.json()之前，req的原始body流未被消耗
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        req.pipe(proxyReq);
       } else {
         proxyReq.end();
       }
