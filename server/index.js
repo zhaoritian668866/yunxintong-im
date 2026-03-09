@@ -16,18 +16,21 @@ const USER_WEB_DIR = path.join(__dirname, 'build/web_user');
 const PORT_USER = process.env.PORT_USER || 8088;
 const userApp = express();
 userApp.use(cors(corsOptions));
-userApp.use(express.json());
-userApp.use(express.urlencoded({ extended: true }));
 
 userApp.use((req, res, next) => {
   if (req.path.startsWith('/api')) console.log(`[User] ${req.method} ${req.path}`);
   next();
 });
 
+// 代理路由必须在express.json()之前注册，避免文件上传的原始请求体被解析消耗
+userApp.use('/api/proxy', require('./routes/proxy')());
+
+// 其他API路由需要JSON解析
+userApp.use(express.json());
+userApp.use(express.urlencoded({ extended: true }));
+
 // 企业ID解析（查询数据库中租户的api_url）
 userApp.use('/api/saas', require('./routes/auth'));
-// 代理路由：前端通过 /api/proxy/{enterprise_id}/{path} 转发到企业真实服务器
-userApp.use('/api/proxy', require('./routes/proxy'));
 userApp.get('/api/health', (req, res) => {
   res.json({ code: 200, message: 'OK', timestamp: new Date().toISOString() });
 });

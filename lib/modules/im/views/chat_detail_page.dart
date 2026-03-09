@@ -1,13 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:file_picker/file_picker.dart';
 import '../../../config/theme.dart';
 import '../../../services/api_service.dart';
 import 'emoji_picker_widget.dart';
 import 'image_preview_page.dart';
 import 'call_page.dart';
+import '../../../services/web_audio_helper.dart'
+  if (dart.library.io) '../../../services/web_audio_stub.dart' as webAudio;
 
 class ChatDetailPage extends StatefulWidget {
   final String conversationId;
@@ -39,13 +43,28 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
 
   // 功能开关
   Map<String, dynamic> _features = {};
-  bool get _enableVoiceMessage => _features['enable_voice_message'] != false;
-  bool get _enableImageSend => _features['enable_image_send'] != false;
-  bool get _enableVideoSend => _features['enable_video_send'] != false;
-  bool get _enableEmoji => _features['enable_emoji'] != false;
-  bool get _enableVoiceCall => _features['enable_voice_call'] != false;
-  bool get _enableVideoCall => _features['enable_video_call'] != false;
-  bool get _enableFileSend => _features['enable_file_send'] != false;
+
+  // 语音录制状态
+  bool _isRecording = false;
+  int _recordDuration = 0;
+  Timer? _recordTimer;
+  /// 判断功能开关：0/false/null表示关闭，1/true/缺少表示开启
+  bool _isFeatureEnabled(String key) {
+    final v = _features[key];
+    if (v == null) return true; // 未设置时默认开启
+    if (v is bool) return v;
+    if (v is int) return v != 0;
+    if (v is String) return v != '0' && v.toLowerCase() != 'false';
+    return true;
+  }
+  bool get _enableVoiceMessage => _isFeatureEnabled('enable_voice_message');
+  bool get _enableImageSend => _isFeatureEnabled('enable_image_send');
+  bool get _enableVideoSend => _isFeatureEnabled('enable_video_send');
+  bool get _enableEmoji => _isFeatureEnabled('enable_emoji');
+  bool get _enableVoiceCall => _isFeatureEnabled('enable_voice_call');
+  bool get _enableVideoCall => _isFeatureEnabled('enable_video_call');
+  bool get _enableFileSend => _isFeatureEnabled('enable_file_send');
+  bool get _enableMsgRecall => _isFeatureEnabled('enable_msg_recall');
 
   // 附件面板
   bool _showAttachPanel = false;
@@ -55,6 +74,31 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
   List<PlatformFile> _selectedImages = [];
 
   String get _displayTitle => widget.title.isNotEmpty ? widget.title : (widget.conversationName ?? '');
+
+  /// 解析文件URL，将相对路径转为通过代理访问的完整URL
+  String _resolveFileUrl(String url) {
+    if (url.isEmpty) return url;
+    // 已经是完整URL
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    // 相对路径（如 /uploads/images/xxx.jpg），拼接企业API基址
+    final base = ApiService.uploadBaseUrl;
+    if (base.isEmpty) return url;
+    // base = /api/proxy/EID 或 http://ip:port/api
+    // url = /uploads/xxx => 需要拼接为 base + url
+    if (url.startsWith('/')) {
+      // 代理模式: /api/proxy/EID + /uploads/xxx => /api/proxy/EID/uploads/xxx
+      // 直连模式: http://ip:port/api + /uploads/xxx => http://ip:port/uploads/xxx
+      if (base.startsWith('http')) {
+        // 直连模式，取域名部分
+        final uri = Uri.parse(base);
+        return '${uri.scheme}://${uri.host}:${uri.port}$url';
+      } else {
+        // 代理模式，拼接代理前缀
+        return '$base$url';
+      }
+    }
+    return '$base/$url';
+  }
 
   @override
   void initState() {
@@ -70,6 +114,8 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
     _msgController.dispose();
     _scrollController.dispose();
     _refreshTimer?.cancel();
+    _recordTimer?.cancel();
+    if (_isRecording) webAudio.cancelRecording();
     super.dispose();
   }
 
@@ -148,7 +194,7 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
     final imageUrls = <String>[];
     for (final file in _selectedImages) {
       if (file.bytes != null) {
-        final uploadRes = await ApiService.uploadFile(file.bytes!, file.name, type: 'images');
+        final uploadRes = await ApiService.uploadFile(file.bytes!, file.name, type: 'single');
         if (uploadRes.isSuccess && uploadRes.data != null) {
           imageUrls.add(uploadRes.data['url'] ?? uploadRes.data['file_url'] ?? '');
         }
@@ -210,7 +256,7 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
       final file = result.files.first;
       if (file.bytes == null) return;
       setState(() { _sending = true; _showAttachPanel = false; });
-      final uploadRes = await ApiService.uploadFile(file.bytes!, file.name, type: 'videos');
+      final uploadRes = await ApiService.uploadFile(file.bytes!, file.name, type: 'single');
       if (!mounted) return;
       if (uploadRes.isSuccess && uploadRes.data != null) {
         final fileUrl = uploadRes.data['url'] ?? uploadRes.data['file_url'] ?? '';
@@ -231,7 +277,7 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
       final file = result.files.first;
       if (file.bytes == null) return;
       setState(() { _sending = true; _showAttachPanel = false; });
-      final uploadRes = await ApiService.uploadFile(file.bytes!, file.name, type: 'files');
+      final uploadRes = await ApiService.uploadFile(file.bytes!, file.name, type: 'single');
       if (!mounted) return;
       if (uploadRes.isSuccess && uploadRes.data != null) {
         final fileUrl = uploadRes.data['url'] ?? uploadRes.data['file_url'] ?? '';
@@ -244,6 +290,80 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
       setState(() { _sending = false; });
     }
   }
+
+  // ==================== 语音录制功能 ====================
+
+  /// 开始录音
+  Future<void> _startRecording() async {
+    if (!kIsWeb) return;
+    try {
+      // 通过JavaScript调用Web Audio API录音
+      webAudio.startRecording();
+      setState(() {
+        _isRecording = true;
+        _recordDuration = 0;
+      });
+      _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) {
+          setState(() => _recordDuration++);
+          if (_recordDuration >= 60) {
+            _stopRecording(); // 最长60秒
+          }
+        }
+      });
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('录音失败: $e'), behavior: SnackBarBehavior.floating));
+    }
+  }
+
+  /// 停止录音并发送
+  Future<void> _stopRecording({bool cancel = false}) async {
+    _recordTimer?.cancel();
+    _recordTimer = null;
+    if (!_isRecording) return;
+    setState(() => _isRecording = false);
+    if (cancel || _recordDuration < 1) return;
+
+    try {
+      // 通过JavaScript获取录音数据
+      final bytes = await webAudio.stopRecording();
+      if (bytes == null || bytes.isEmpty) return;
+
+      setState(() => _sending = true);
+      // 上传语音文件
+      final uploadRes = await ApiService.uploadFile(bytes, 'voice_${DateTime.now().millisecondsSinceEpoch}.webm', type: 'voice');
+      if (!mounted) return;
+      if (uploadRes.isSuccess && uploadRes.data != null) {
+        final fileUrl = uploadRes.data['url'] ?? uploadRes.data['file_url'] ?? '';
+        final res = await ApiService.sendMessage(
+          widget.conversationId, '[语音消息]',
+          type: 'voice', fileUrl: fileUrl, duration: _recordDuration,
+        );
+        if (res.isSuccess && res.data != null) {
+          setState(() { _messages.add(res.data); });
+          _scrollToBottom();
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('语音上传失败'), behavior: SnackBarBehavior.floating));
+      }
+      setState(() => _sending = false);
+    } catch (e) {
+      setState(() => _sending = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('语音发送失败: $e'), behavior: SnackBarBehavior.floating));
+    }
+  }
+
+  /// 播放语音消息
+  void _playVoice(String url) {
+    if (!kIsWeb) return;
+    try {
+      webAudio.playAudio(url);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('播放失败'), behavior: SnackBarBehavior.floating));
+    }
+  }
+
+
 
   // 插入Emoji
   void _insertEmoji(String emoji) {
@@ -379,7 +499,7 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
 
     switch (msgType) {
       case 'image':
-        final url = msg['file_url'] ?? '';
+        final url = _resolveFileUrl(msg['file_url'] ?? '');
         return GestureDetector(
           onTap: () => _previewImage(url),
           child: Container(
@@ -392,42 +512,70 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
         );
 
       case 'video':
-        return Container(
-          padding: const EdgeInsets.all(12),
-          constraints: BoxConstraints(maxWidth: maxWidth),
-          decoration: BoxDecoration(color: bubbleColor, borderRadius: borderRadius, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 4, offset: const Offset(0, 1))]),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.play_circle_filled, color: textColor, size: 36),
-            const SizedBox(width: 8),
-            Text('[视频消息]', style: TextStyle(fontSize: 14, color: textColor)),
-          ]),
+        final videoUrl = _resolveFileUrl(msg['file_url'] ?? '');
+        return GestureDetector(
+          onTap: () {
+            // 在新窗口打开视频
+            if (videoUrl.isNotEmpty) {
+              // Flutter Web中使用url_launcher或直接打开
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('视频播放功能开发中'), behavior: SnackBarBehavior.floating));
+            }
+          },
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            constraints: BoxConstraints(maxWidth: maxWidth),
+            decoration: BoxDecoration(color: bubbleColor, borderRadius: borderRadius, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 4, offset: const Offset(0, 1))]),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.play_circle_filled, color: textColor, size: 36),
+              const SizedBox(width: 8),
+              Flexible(child: Text(msg['file_name'] ?? '[视频消息]', style: TextStyle(fontSize: 14, color: textColor), maxLines: 1, overflow: TextOverflow.ellipsis)),
+            ]),
+          ),
         );
 
       case 'voice':
         final duration = msg['duration'] ?? 0;
+        final voiceUrl = _resolveFileUrl(msg['file_url'] ?? '');
         final width = 80.0 + (duration as num).toDouble() * 3;
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          constraints: BoxConstraints(maxWidth: maxWidth, minWidth: 80),
-          width: width.clamp(80, maxWidth),
-          decoration: BoxDecoration(color: bubbleColor, borderRadius: borderRadius, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 4, offset: const Offset(0, 1))]),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.mic, color: textColor, size: 18),
-            const SizedBox(width: 6),
-            Expanded(child: Text('${duration}″', style: TextStyle(fontSize: 14, color: textColor))),
-          ]),
+        return GestureDetector(
+          onTap: () {
+            if (voiceUrl.isNotEmpty) {
+              _playVoice(voiceUrl);
+            }
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            constraints: BoxConstraints(maxWidth: maxWidth, minWidth: 80),
+            width: width.clamp(80, maxWidth),
+            decoration: BoxDecoration(color: bubbleColor, borderRadius: borderRadius, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 4, offset: const Offset(0, 1))]),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.mic, color: textColor, size: 18),
+              const SizedBox(width: 6),
+              Expanded(child: Text('${duration}″', style: TextStyle(fontSize: 14, color: textColor))),
+              Icon(Icons.play_arrow, color: textColor, size: 16),
+            ]),
+          ),
         );
 
       case 'file':
-        return Container(
-          padding: const EdgeInsets.all(12),
-          constraints: BoxConstraints(maxWidth: maxWidth),
-          decoration: BoxDecoration(color: bubbleColor, borderRadius: borderRadius, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 4, offset: const Offset(0, 1))]),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.insert_drive_file, color: textColor, size: 28),
-            const SizedBox(width: 8),
-            Flexible(child: Text(msg['file_name'] ?? '文件', style: TextStyle(fontSize: 14, color: textColor), maxLines: 2, overflow: TextOverflow.ellipsis)),
-          ]),
+        final fileDownloadUrl = _resolveFileUrl(msg['file_url'] ?? '');
+        return GestureDetector(
+          onTap: () {
+            if (fileDownloadUrl.isNotEmpty) {
+              // 下载文件
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('文件下载功能开发中'), behavior: SnackBarBehavior.floating));
+            }
+          },
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            constraints: BoxConstraints(maxWidth: maxWidth),
+            decoration: BoxDecoration(color: bubbleColor, borderRadius: borderRadius, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 4, offset: const Offset(0, 1))]),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.insert_drive_file, color: textColor, size: 28),
+              const SizedBox(width: 8),
+              Flexible(child: Text(msg['file_name'] ?? '文件', style: TextStyle(fontSize: 14, color: textColor), maxLines: 2, overflow: TextOverflow.ellipsis)),
+            ]),
+          ),
         );
 
       case 'mixed':
@@ -438,6 +586,8 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
         } else if (msg['images'] is String) {
           try { imageUrls = jsonDecode(msg['images']); } catch (_) {}
         }
+        // 解析所有图片URL
+        imageUrls = imageUrls.map((u) => _resolveFileUrl(u.toString())).toList();
         return Container(
           constraints: BoxConstraints(maxWidth: maxWidth),
           decoration: BoxDecoration(color: bubbleColor, borderRadius: borderRadius, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 4, offset: const Offset(0, 1))]),
@@ -469,10 +619,11 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
   Widget _buildImageGrid(List imageUrls, double maxWidth) {
     final count = imageUrls.length;
     if (count == 1) {
+      final singleUrl = imageUrls[0].toString();
       return GestureDetector(
-        onTap: () => _previewImage(imageUrls[0]),
+        onTap: () => _previewImage(singleUrl),
         child: ClipRRect(borderRadius: BorderRadius.circular(8),
-          child: Image.network(imageUrls[0], fit: BoxFit.cover, height: 180, width: maxWidth,
+          child: Image.network(singleUrl, fit: BoxFit.cover, height: 180, width: maxWidth,
             errorBuilder: (_, __, ___) => Container(height: 100, color: Colors.grey.shade200, child: const Icon(Icons.broken_image)))),
       );
     }
@@ -487,7 +638,7 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
       spacing: spacing,
       runSpacing: spacing,
       children: imageUrls.take(9).toList().asMap().entries.map((entry) {
-        final url = entry.value.toString();
+        final url = _resolveFileUrl(entry.value.toString());
         return GestureDetector(
           onTap: () => _previewImage(url),
           child: ClipRRect(
@@ -544,7 +695,7 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已复制'), behavior: SnackBarBehavior.floating));
             },
           ),
-          if (isMe) ListTile(
+          if (isMe && _enableMsgRecall) ListTile(
             leading: const Icon(Icons.undo, color: AppColors.warning),
             title: const Text('撤回消息'),
             onTap: () async {
@@ -610,6 +761,25 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
   }
 
   Widget _buildInputBar() {
+    // 录音状态显示
+    if (_isRecording) {
+      return Container(
+        padding: EdgeInsets.only(left: 16, right: 16, top: 12, bottom: MediaQuery.of(context).padding.bottom + 12),
+        decoration: BoxDecoration(color: Colors.red.shade50, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8, offset: const Offset(0, -2))]),
+        child: Row(children: [
+          Container(
+            width: 12, height: 12,
+            decoration: BoxDecoration(color: Colors.red, shape: BoxShape.circle,
+              boxShadow: [BoxShadow(color: Colors.red.withOpacity(0.4), blurRadius: 6)]),
+          ),
+          const SizedBox(width: 12),
+          Text('正在录音 ${_recordDuration}s', style: TextStyle(color: Colors.red.shade700, fontSize: 16, fontWeight: FontWeight.w500)),
+          const Spacer(),
+          Text('松开发送', style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+        ]),
+      );
+    }
+
     return Container(
       padding: EdgeInsets.only(left: 8, right: 8, top: 8, bottom: MediaQuery.of(context).padding.bottom + 8),
       decoration: BoxDecoration(color: AppColors.cardBg, boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8, offset: const Offset(0, -2))]),
@@ -639,6 +809,24 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
               onTap: () => setState(() { _showEmojiPanel = false; _showAttachPanel = false; }),
             ),
           )),
+          // 语音按钮
+          if (_enableVoiceMessage)
+            GestureDetector(
+              onLongPressStart: (_) => _startRecording(),
+              onLongPressEnd: (_) => _stopRecording(),
+              child: Container(
+                width: 36, height: 36,
+                decoration: BoxDecoration(
+                  color: _isRecording ? Colors.red.withOpacity(0.1) : Colors.transparent,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  _isRecording ? Icons.mic : Icons.mic_none,
+                  color: _isRecording ? Colors.red : AppColors.textSecondary,
+                  size: 24,
+                ),
+              ),
+            ),
           // 附件按钮
           IconButton(
             icon: Icon(Icons.add_circle_outline, color: AppColors.textSecondary, size: 24),

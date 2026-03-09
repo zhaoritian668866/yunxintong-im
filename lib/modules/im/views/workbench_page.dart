@@ -31,7 +31,15 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     }
   }
 
-  bool _isEnabled(String key) => _features[key] != false;
+  /// 判断功能开关：0/false表示关闭，1/true/缺少表示开启
+  bool _isEnabled(String key) {
+    final v = _features[key];
+    if (v == null) return true;
+    if (v is bool) return v;
+    if (v is int) return v != 0;
+    if (v is String) return v != '0' && v.toLowerCase() != 'false';
+    return true;
+  }
 
   @override
   Widget build(BuildContext context) {

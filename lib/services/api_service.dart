@@ -304,11 +304,15 @@ class ApiService {
 
   // 获取功能开关
   static Future<ApiResponse> getFeatures() async {
-    return _request('GET', '$_entApiBase/api/features', token: _userToken);
+    // _entApiBase代理模式 = /api/proxy/EID => 转发到 api_url(http://ip:port/api)/{subPath}
+    // 企业后端路由是 /api/features，所以subPath应该是 features
+    return _request('GET', '$_entApiBase/features', token: _userToken);
   }
 
   // 文件上传（通过multipart/form-data）
-  static Future<ApiResponse> uploadFile(List<int> bytes, String fileName, {String type = 'images'}) async {
+  /// 上传文件
+  /// [endpoint] 可选值: 'single'(单文件), 'voice'(语音)
+  static Future<ApiResponse> uploadFile(List<int> bytes, String fileName, {String type = 'single'}) async {
     try {
       final uri = Uri.parse('$_entApiBase/upload/$type');
       final request = http.MultipartRequest('POST', uri);

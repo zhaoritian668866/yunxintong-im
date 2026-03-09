@@ -18,23 +18,45 @@ class _ImHomePageState extends State<ImHomePage> with WidgetsBindingObserver {
   int _currentIndex = 0;
   int _totalUnread = 0;
   Timer? _unreadTimer;
+  Map<String, dynamic> _features = {};
+  bool _featuresLoaded = false;
 
-  final List<Widget> _pages = const [
-    ChatListPage(),
-    ContactsPage(),
-    WorkbenchPage(),
-    ProfilePage(),
+  bool get _enableWorkbench {
+    final v = _features['enable_workbench'];
+    if (v == null) return true;
+    if (v is bool) return v;
+    if (v is int) return v != 0;
+    return true;
+  }
+
+  List<Widget> get _pages => [
+    const ChatListPage(),
+    const ContactsPage(),
+    if (_enableWorkbench) const WorkbenchPage(),
+    const ProfilePage(),
   ];
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _loadFeatures();
     _loadUnreadCount();
-    // 每3秒刷新未读数，保持首页底部Tab角标实时更新
     _unreadTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (mounted) _loadUnreadCount();
     });
+  }
+
+  Future<void> _loadFeatures() async {
+    final res = await ApiService.getFeatures();
+    if (mounted && res.isSuccess && res.data != null) {
+      setState(() {
+        _features = Map<String, dynamic>.from(res.data);
+        _featuresLoaded = true;
+        // 如果当前选中的tab索引超出范围，重置为0
+        if (_currentIndex >= _pages.length) _currentIndex = 0;
+      });
+    }
   }
 
   @override
@@ -93,14 +115,15 @@ class _ImHomePageState extends State<ImHomePage> with WidgetsBindingObserver {
               activeIcon: _buildNavIcon(Icons.contacts, 1, active: true),
               label: '通讯录',
             ),
+            if (_enableWorkbench)
+              BottomNavigationBarItem(
+                icon: _buildNavIcon(Icons.grid_view_outlined, 2),
+                activeIcon: _buildNavIcon(Icons.grid_view, 2, active: true),
+                label: '工作台',
+              ),
             BottomNavigationBarItem(
-              icon: _buildNavIcon(Icons.grid_view_outlined, 2),
-              activeIcon: _buildNavIcon(Icons.grid_view, 2, active: true),
-              label: '工作台',
-            ),
-            BottomNavigationBarItem(
-              icon: _buildNavIcon(Icons.person_outline, 3),
-              activeIcon: _buildNavIcon(Icons.person, 3, active: true),
+              icon: _buildNavIcon(Icons.person_outline, _enableWorkbench ? 3 : 2),
+              activeIcon: _buildNavIcon(Icons.person, _enableWorkbench ? 3 : 2, active: true),
               label: '我的',
             ),
           ],
