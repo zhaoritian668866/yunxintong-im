@@ -10,6 +10,7 @@ import '../../../services/api_service.dart';
 import 'emoji_picker_widget.dart';
 import 'image_preview_page.dart';
 import 'call_page.dart';
+import '../../../services/ws_service.dart';
 import '../../../services/web_audio_helper.dart'
   if (dart.library.io) '../../../services/web_audio_stub.dart' as webAudio;
 
@@ -107,6 +108,16 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
     _loadMessages();
     _loadFeatures();
     _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _loadMessages(silent: true));
+    // 监听功能开关变更（后台修改设置后即时生效）
+    _setupSettingsListener();
+  }
+
+  void _setupSettingsListener() {
+    WsService.instance.onSettingsChanged = (data) {
+      if (mounted) {
+        setState(() { _features = Map<String, dynamic>.from(data); });
+      }
+    };
   }
 
   @override
@@ -312,8 +323,26 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
   Future<void> _startRecording() async {
     if (!kIsWeb) return;
     try {
-      // 通过JavaScript调用Web Audio API录音
-      webAudio.startRecording();
+      // 先检查安全上下文
+      if (!webAudio.isSecureContext()) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('需要HTTPS才能使用麦克风。请使用HTTPS访问或在浏览器设置中将此站点添加为安全站点。'), behavior: SnackBarBehavior.floating, duration: Duration(seconds: 4)),
+          );
+        }
+        return;
+      }
+      // 异步请求麦克风权限并开始录音
+      final success = await webAudio.startRecordingAsync();
+      if (!success) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('无法获取麦克风权限，请在浏览器中允许访问'), behavior: SnackBarBehavior.floating),
+          );
+        }
+        return;
+      }
+      if (!mounted) return;
       setState(() {
         _isRecording = true;
         _recordDuration = 0;
@@ -327,7 +356,9 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
         }
       });
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('录音失败: $e'), behavior: SnackBarBehavior.floating));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('录音失败: $e'), behavior: SnackBarBehavior.floating));
+      }
     }
   }
 
@@ -530,10 +561,8 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
         final videoUrl = _resolveFileUrl(msg['file_url'] ?? '');
         return GestureDetector(
           onTap: () {
-            // 在新窗口打开视频
-            if (videoUrl.isNotEmpty) {
-              // Flutter Web中使用url_launcher或直接打开
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('视频播放功能开发中'), behavior: SnackBarBehavior.floating));
+            if (videoUrl.isNotEmpty && kIsWeb) {
+              webAudio.playVideo(videoUrl);
             }
           },
           child: Container(
@@ -576,9 +605,8 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
         final fileDownloadUrl = _resolveFileUrl(msg['file_url'] ?? '');
         return GestureDetector(
           onTap: () {
-            if (fileDownloadUrl.isNotEmpty) {
-              // 下载文件
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('文件下载功能开发中'), behavior: SnackBarBehavior.floating));
+            if (fileDownloadUrl.isNotEmpty && kIsWeb) {
+              webAudio.downloadFile(fileDownloadUrl, msg['file_name'] ?? 'download');
             }
           },
           child: Container(

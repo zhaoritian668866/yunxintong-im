@@ -33,6 +33,12 @@ String? _jsEvalString(String code) {
   }
 }
 
+/// 检查是否在安全上下文中（HTTPS 或 localhost）
+bool isSecureContext() {
+  final result = _jsEvalString('String(window.isSecureContext)');
+  return result == 'true';
+}
+
 /// 初始化WebRTC全局对象和回调
 void initWebRTC() {
   _jsEval(r'''

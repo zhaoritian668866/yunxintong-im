@@ -22,6 +22,8 @@ class WsService {
   Function(Map<String, dynamic>)? onOnlineStatusChanged;
   Function(Map<String, dynamic>)? onMessageRecalled;
   Function(bool)? onConnectionChanged;
+  /// 功能开关变更回调（后台修改设置后即时推送）
+  Function(Map<String, dynamic>)? onSettingsChanged;
 
   // ==================== WebRTC通话信令回调 ====================
   /// 收到来电（对方发起call_offer）
@@ -116,6 +118,9 @@ class WsService {
           // 认证失败
           break;
         case 'pong':
+          break;
+        case 'settings_changed':
+          onSettingsChanged?.call(msg['data'] ?? {});
           break;
 
         // ==================== WebRTC通话信令 ====================

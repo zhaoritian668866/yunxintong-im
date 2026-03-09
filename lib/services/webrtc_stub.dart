@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 
+bool isSecureContext() => true;
 void initWebRTC() {}
 Future<bool> createPeerConnection({required bool isVideo}) async => false;
 Future<String?> createOffer() async => null;

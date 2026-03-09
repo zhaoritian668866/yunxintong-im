@@ -52,15 +52,28 @@ class _ImHomePageState extends State<ImHomePage> with WidgetsBindingObserver {
     _connectWebSocket();
   }
 
-  /// 连接WebSocket并监听来电
+  /// 连接WebSocket并监听来电和设置变更
   void _connectWebSocket() {
     final ws = WsService.instance;
 
     // 设置来电回调
     ws.onCallOffer = _handleIncomingCall;
 
+    // 设置功能开关变更回调（后台修改设置后即时生效）
+    ws.onSettingsChanged = _handleSettingsChanged;
+
     // 连接
     ws.connect();
+  }
+
+  /// 处理功能开关变更
+  void _handleSettingsChanged(Map<String, dynamic> data) {
+    if (!mounted) return;
+    setState(() {
+      _features = Map<String, dynamic>.from(data);
+      _featuresLoaded = true;
+      if (_currentIndex >= _pages.length) _currentIndex = 0;
+    });
   }
 
   /// 处理来电

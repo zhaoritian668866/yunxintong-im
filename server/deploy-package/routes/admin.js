@@ -178,6 +178,10 @@ router.put('/settings', verifyToken, requireRole('enterprise_admin'), (req, res)
     if (setClauses.length === 0) return res.json({ code: 400, message: '没有需要更新的字段' });
     setClauses.push('updated_at=CURRENT_TIMESTAMP');
     db.prepare(`UPDATE settings SET ${setClauses.join(', ')}`).run(...values);
+    // 通过WebSocket广播设置变更给所有在线用户，实现即时生效
+    if (typeof global.broadcastSettingsChanged === 'function') {
+      global.broadcastSettingsChanged();
+    }
     res.json({ code: 200, message: '设置已保存' });
   } catch (err) { res.status(500).json({ code: 500, message: '服务器错误: ' + err.message }); }
 });

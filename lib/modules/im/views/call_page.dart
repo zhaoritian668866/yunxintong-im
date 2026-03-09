@@ -111,6 +111,12 @@ class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
       return;
     }
 
+    // 检查安全上下文（HTTP下无法使用麦克风/摄像头）
+    if (!webrtc.isSecureContext()) {
+      _setError('需要HTTPS才能使用音视频通话\n请使用HTTPS访问或在浏览器设置中将此站点添加为安全站点');
+      return;
+    }
+
     setState(() => _callState = CallState.initializing);
 
     // 注入媒体元素
@@ -158,6 +164,12 @@ class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
   /// 接听来电
   Future<void> _acceptCall() async {
     if (!kIsWeb) return;
+
+    // 检查安全上下文
+    if (!webrtc.isSecureContext()) {
+      _setError('需要HTTPS才能接听通话\n请使用HTTPS访问');
+      return;
+    }
 
     setState(() => _callState = CallState.connecting);
 

@@ -246,6 +246,53 @@ function broadcastOnlineStatus(userId, status) {
   });
 }
 
+// 广播功能开关变更给所有在线用户
+function broadcastSettingsChanged() {
+  try {
+    const settings = db.prepare('SELECT * FROM settings LIMIT 1').get();
+    if (!settings) return;
+    const features = {
+      enable_voice_message: settings.enable_voice_message ?? 1,
+      enable_image_send: settings.enable_image_send ?? 1,
+      enable_video_send: settings.enable_video_send ?? 1,
+      enable_emoji: settings.enable_emoji ?? 1,
+      enable_voice_call: settings.enable_voice_call ?? 1,
+      enable_video_call: settings.enable_video_call ?? 1,
+      enable_read_receipt: settings.enable_read_receipt ?? 1,
+      enable_msg_recall: settings.enable_msg_recall ?? 1,
+      enable_file_send: settings.enable_file_send ?? 1,
+      enable_workbench: settings.enable_workbench ?? 1,
+      enable_schedule: settings.enable_schedule ?? 1,
+      enable_task: settings.enable_task ?? 1,
+      enable_cloud_drive: settings.enable_cloud_drive ?? 1,
+      enable_approval: settings.enable_approval ?? 1,
+      enable_attendance: settings.enable_attendance ?? 1,
+      enable_meeting_room: settings.enable_meeting_room ?? 1,
+      enable_announcement: settings.enable_announcement ?? 1,
+      enable_voting: settings.enable_voting ?? 1,
+      enable_expense: settings.enable_expense ?? 1,
+      enable_calendar: settings.enable_calendar ?? 1,
+      enable_report: settings.enable_report ?? 1,
+      enable_analytics: settings.enable_analytics ?? 1,
+      max_file_size: settings.max_file_size ?? 50,
+      allow_file_sharing: settings.allow_file_sharing ?? 1,
+      allow_group_creation: settings.allow_group_creation ?? 1,
+    };
+    const payload = JSON.stringify({ type: 'settings_changed', data: features });
+    console.log(`[WS] Broadcasting settings_changed to ${onlineUsers.size} users`);
+    onlineUsers.forEach((ws, uid) => {
+      if (ws.readyState === 1) {
+        ws.send(payload);
+      }
+    });
+  } catch (e) {
+    console.error('[WS] broadcastSettingsChanged error:', e.message);
+  }
+}
+
+// 通过全局变量导出广播函数供admin路由使用
+global.broadcastSettingsChanged = broadcastSettingsChanged;
+
 // ==================== 启动服务 ====================
 server.listen(PORT, '0.0.0.0', () => {
   console.log('==========================================');
