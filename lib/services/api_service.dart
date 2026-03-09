@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart' as http_parser;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiResponse {
@@ -317,7 +318,27 @@ class ApiService {
       final uri = Uri.parse('$_entApiBase/upload/$type');
       final request = http.MultipartRequest('POST', uri);
       if (_userToken.isNotEmpty) request.headers['Authorization'] = 'Bearer $_userToken';
-      request.files.add(http.MultipartFile.fromBytes('file', bytes, filename: fileName));
+      // 根据文件名推断 Content-Type，确保 multer 能正确分类文件
+      final ext = fileName.toLowerCase().split('.').last;
+      final mimeTypes = {
+        'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+        'gif': 'image/gif', 'webp': 'image/webp', 'bmp': 'image/bmp',
+        'mp4': 'video/mp4', 'mov': 'video/quicktime', 'webm': 'video/webm',
+        'avi': 'video/x-msvideo', 'mkv': 'video/x-matroska',
+        'mp3': 'audio/mpeg', 'wav': 'audio/wav', 'ogg': 'audio/ogg',
+        'aac': 'audio/aac', 'm4a': 'audio/mp4',
+        'pdf': 'application/pdf', 'doc': 'application/msword',
+        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'xls': 'application/vnd.ms-excel',
+        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'zip': 'application/zip', 'txt': 'text/plain',
+      };
+      final mimeStr = mimeTypes[ext] ?? 'application/octet-stream';
+      final mimeParts = mimeStr.split('/');
+      request.files.add(http.MultipartFile.fromBytes(
+        'file', bytes, filename: fileName,
+        contentType: http_parser.MediaType(mimeParts[0], mimeParts[1]),
+      ));
       final streamedResponse = await request.send().timeout(const Duration(seconds: 60));
       final response = await http.Response.fromStream(streamedResponse);
       final json = jsonDecode(utf8.decode(response.bodyBytes));
@@ -334,7 +355,12 @@ class ApiService {
       final request = http.MultipartRequest('POST', uri);
       if (_userToken.isNotEmpty) request.headers['Authorization'] = 'Bearer $_userToken';
       for (int i = 0; i < bytesList.length && i < 9; i++) {
-        request.files.add(http.MultipartFile.fromBytes('images', bytesList[i], filename: fileNames[i]));
+        final ext = fileNames[i].toLowerCase().split('.').last;
+        final mimeMap = {'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'gif': 'image/gif', 'webp': 'image/webp', 'bmp': 'image/bmp'};
+        final mime = mimeMap[ext] ?? 'image/jpeg';
+        final parts = mime.split('/');
+        request.files.add(http.MultipartFile.fromBytes('images', bytesList[i], filename: fileNames[i],
+          contentType: http_parser.MediaType(parts[0], parts[1])));
       }
       final streamedResponse = await request.send().timeout(const Duration(seconds: 120));
       final response = await http.Response.fromStream(streamedResponse);

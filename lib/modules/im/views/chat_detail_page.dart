@@ -81,20 +81,30 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
     if (url.isEmpty) return url;
     // 已经是完整URL
     if (url.startsWith('http://') || url.startsWith('https://')) return url;
-    // 相对路径（如 /uploads/images/xxx.jpg），拼接企业API基址
+    // 相对路径（如 /uploads/files/xxx.jpg），拼接企业API基址
     final base = ApiService.uploadBaseUrl;
     if (base.isEmpty) return url;
-    // base = /api/proxy/EID 或 http://ip:port/api
-    // url = /uploads/xxx => 需要拼接为 base + url
+    // base 可能是:
+    //   代理模式(相对路径): /api/proxy/EID
+    //   代理模式(绝对URL): http://host:port/api/proxy/EID
+    //   直连模式: http://ip:port/api
+    // url = /uploads/xxx => 需要通过代理访问
     if (url.startsWith('/')) {
-      // 代理模式: /api/proxy/EID + /uploads/xxx => /api/proxy/EID/uploads/xxx
-      // 直连模式: http://ip:port/api + /uploads/xxx => http://ip:port/uploads/xxx
       if (base.startsWith('http')) {
-        // 直连模式，取域名部分
+        // 绝对URL模式
         final uri = Uri.parse(base);
-        return '${uri.scheme}://${uri.host}:${uri.port}$url';
+        final basePath = uri.path; // 如 /api/proxy/FC888 或 /api
+        if (basePath.contains('/proxy/')) {
+          // 代理模式：保留完整代理路径前缀
+          // http://host:port/api/proxy/EID + /uploads/xxx => http://host:port/api/proxy/EID/uploads/xxx
+          return '${uri.scheme}://${uri.host}:${uri.port}$basePath$url';
+        } else {
+          // 直连模式：取域名部分
+          // http://ip:port/api + /uploads/xxx => http://ip:port/uploads/xxx
+          return '${uri.scheme}://${uri.host}:${uri.port}$url';
+        }
       } else {
-        // 代理模式，拼接代理前缀
+        // 相对路径代理模式
         return '$base$url';
       }
     }
@@ -681,7 +691,7 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
       spacing: spacing,
       runSpacing: spacing,
       children: imageUrls.take(9).toList().asMap().entries.map((entry) {
-        final url = _resolveFileUrl(entry.value.toString());
+        final url = entry.value.toString(); // 已在mixed case中解析过，无需再次resolve
         return GestureDetector(
           onTap: () => _previewImage(url),
           child: ClipRRect(
