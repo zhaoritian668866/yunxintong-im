@@ -219,12 +219,13 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
       msgType = 'text';
     }
 
+    // 单图发送为image类型，多图或图文为mixed类型
     final res = await ApiService.sendMessage(
       widget.conversationId,
-      text.isNotEmpty ? text : (imageUrls.length == 1 ? '[图片]' : '[图片 x${imageUrls.length}]'),
+      text.isNotEmpty ? text : '',
       type: msgType,
-      fileUrl: imageUrls.length == 1 && msgType == 'image' ? imageUrls.first : null,
-      images: imageUrls.length > 1 || msgType == 'mixed' ? imageUrls : null,
+      fileUrl: msgType == 'image' ? imageUrls.first : null,
+      images: msgType == 'mixed' ? imageUrls : null,
     );
 
     if (!mounted) return;

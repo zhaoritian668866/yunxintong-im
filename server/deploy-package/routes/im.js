@@ -64,8 +64,9 @@ router.post('/messages', verifyToken, (req, res) => {
     if (!conversation_id) return res.json({ code: 400, message: '会话ID不能为空' });
     const msgType = type || 'text';
     if (msgType === 'text' && !content) return res.json({ code: 400, message: '消息内容不能为空' });
+    // image/video/voice/file类型不需要content，允许为空
     if (['image', 'video', 'voice', 'file'].includes(msgType) && !file_url) return res.json({ code: 400, message: '文件URL不能为空' });
-    if (msgType === 'mixed' && !content && (!images || images.length === 0)) return res.json({ code: 400, message: '图文消息至少需要文字或图片' });
+    if (msgType === 'mixed' && (!images || images.length === 0)) return res.json({ code: 400, message: '图文消息至少需要一张图片' });
     if (images && images.length > 9) return res.json({ code: 400, message: '最多发送9张图片' });
     const member = db.prepare('SELECT id FROM conversation_members WHERE conversation_id=? AND user_id=?').get(conversation_id, req.user.id);
     if (!member) return res.json({ code: 403, message: '您不是该会话的成员' });

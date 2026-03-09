@@ -60,6 +60,7 @@ router.post('/single', verifyToken, upload.single('file'), (req, res) => {
       message: '上传成功',
       data: {
         url: fileUrl,
+        file_url: fileUrl,
         filename: file.originalname,
         size: file.size,
         mimetype: file.mimetype,
@@ -77,6 +78,7 @@ router.post('/images', verifyToken, upload.array('images', 9), (req, res) => {
       const fileUrl = `/uploads/${relativePath.replace('uploads/', '')}`;
       return {
         url: fileUrl,
+        file_url: fileUrl,
         filename: file.originalname,
         size: file.size,
         mimetype: file.mimetype,
@@ -87,7 +89,7 @@ router.post('/images', verifyToken, upload.array('images', 9), (req, res) => {
 });
 
 // 语音上传
-router.post('/voice', verifyToken, upload.single('voice'), (req, res) => {
+router.post('/voice', verifyToken, upload.single('file'), (req, res) => {
   try {
     if (!req.file) return res.json({ code: 400, message: '没有上传语音文件' });
     const file = req.file;
@@ -98,6 +100,7 @@ router.post('/voice', verifyToken, upload.single('voice'), (req, res) => {
       message: '上传成功',
       data: {
         url: fileUrl,
+        file_url: fileUrl,
         filename: file.originalname,
         size: file.size,
         duration: parseInt(req.body.duration) || 0,

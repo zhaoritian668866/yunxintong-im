@@ -1,22 +1,26 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import '../../../config/theme.dart';
+import '../../../services/ws_service.dart';
+import '../../../services/webrtc_helper.dart'
+  if (dart.library.io) '../../../services/webrtc_stub.dart' as webrtc;
 
 /// 通话类型
 enum CallType { voice, video }
 
 /// 通话状态
-enum CallState { ringing, connecting, connected, ended }
+enum CallState { initializing, ringing, connecting, connected, ended, error }
 
-/// 通话页面 - 支持语音通话和视频通话
+/// 真实WebRTC通话页面
 class CallPage extends StatefulWidget {
   final String targetUserId;
   final String targetUserName;
   final String? targetUserAvatar;
   final CallType callType;
-  final bool isIncoming; // 是否是来电
-  final dynamic webSocketService; // WebSocket服务实例
+  final bool isIncoming;
+  final Map<String, dynamic>? incomingOffer; // 来电时的SDP offer数据
 
   const CallPage({
     super.key,
@@ -25,7 +29,7 @@ class CallPage extends StatefulWidget {
     this.targetUserAvatar,
     required this.callType,
     this.isIncoming = false,
-    this.webSocketService,
+    this.incomingOffer,
   });
 
   @override
@@ -33,14 +37,22 @@ class CallPage extends StatefulWidget {
 }
 
 class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
-  CallState _callState = CallState.ringing;
+  CallState _callState = CallState.initializing;
   bool _isMuted = false;
   bool _isSpeakerOn = false;
   bool _isVideoEnabled = true;
-  bool _isFrontCamera = true;
   Timer? _durationTimer;
+  Timer? _iceTimer;
   int _durationSeconds = 0;
   late AnimationController _pulseController;
+  String _errorMessage = '';
+
+  // 保存原始回调以便恢复
+  Function(Map<String, dynamic>)? _prevOnCallAnswer;
+  Function(Map<String, dynamic>)? _prevOnIceCandidate;
+  Function(Map<String, dynamic>)? _prevOnCallHangup;
+  Function(Map<String, dynamic>)? _prevOnCallReject;
+  Function(Map<String, dynamic>)? _prevOnCallError;
 
   @override
   void initState() {
@@ -50,23 +62,262 @@ class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
       duration: const Duration(seconds: 2),
     )..repeat();
 
-    if (!widget.isIncoming) {
-      // 拨出电话，模拟连接过程
-      _simulateCall();
+    _setupSignalingCallbacks();
+
+    if (widget.isIncoming) {
+      // 来电 - 等待用户接听
+      setState(() => _callState = CallState.ringing);
+    } else {
+      // 主叫 - 初始化WebRTC并发起呼叫
+      _initiateOutgoingCall();
     }
   }
 
-  void _simulateCall() {
-    // 模拟呼叫中...
-    Future.delayed(const Duration(seconds: 3), () {
+  /// 设置WebSocket信令回调
+  void _setupSignalingCallbacks() {
+    final ws = WsService.instance;
+
+    // 保存原始回调
+    _prevOnCallAnswer = ws.onCallAnswer;
+    _prevOnIceCandidate = ws.onIceCandidate;
+    _prevOnCallHangup = ws.onCallHangup;
+    _prevOnCallReject = ws.onCallReject;
+    _prevOnCallError = ws.onCallError;
+
+    // 设置通话信令回调
+    ws.onCallAnswer = _onCallAnswer;
+    ws.onIceCandidate = _onIceCandidate;
+    ws.onCallHangup = _onCallHangup;
+    ws.onCallReject = _onCallReject;
+    ws.onCallError = _onCallError;
+  }
+
+  /// 恢复原始回调
+  void _restoreCallbacks() {
+    final ws = WsService.instance;
+    ws.onCallAnswer = _prevOnCallAnswer;
+    ws.onIceCandidate = _prevOnIceCandidate;
+    ws.onCallHangup = _prevOnCallHangup;
+    ws.onCallReject = _prevOnCallReject;
+    ws.onCallError = _prevOnCallError;
+  }
+
+  // ==================== 主叫流程 ====================
+
+  /// 发起外呼
+  Future<void> _initiateOutgoingCall() async {
+    if (!kIsWeb) {
+      _setError('通话功能仅支持Web平台');
+      return;
+    }
+
+    setState(() => _callState = CallState.initializing);
+
+    // 注入媒体元素
+    final isVideo = widget.callType == CallType.video;
+    webrtc.injectMediaElements(isVideo);
+
+    // 创建PeerConnection并获取本地媒体流
+    final success = await webrtc.createPeerConnection(isVideo: isVideo);
+    if (!success) {
+      _setError('无法获取麦克风${isVideo ? "/摄像头" : ""}权限，请在浏览器中允许访问');
+      return;
+    }
+
+    // 创建SDP Offer
+    final offerSdp = await webrtc.createOffer();
+    if (offerSdp == null) {
+      _setError('创建通话请求失败');
+      return;
+    }
+
+    // 通过WebSocket发送呼叫请求
+    WsService.instance.sendCallOffer(
+      targetUserId: widget.targetUserId,
+      callType: isVideo ? 'video' : 'voice',
+      sdp: offerSdp,
+    );
+
+    if (mounted) {
+      setState(() => _callState = CallState.ringing);
+    }
+
+    // 开始定期发送ICE候选
+    _startIceCandidateTimer();
+
+    // 30秒无应答自动挂断
+    Future.delayed(const Duration(seconds: 30), () {
       if (mounted && _callState == CallState.ringing) {
-        setState(() => _callState = CallState.connecting);
-        Future.delayed(const Duration(seconds: 1), () {
-          if (mounted && _callState == CallState.connecting) {
-            setState(() => _callState = CallState.connected);
-            _startDurationTimer();
-          }
-        });
+        _hangUp(reason: 'timeout');
+      }
+    });
+  }
+
+  // ==================== 被叫流程 ====================
+
+  /// 接听来电
+  Future<void> _acceptCall() async {
+    if (!kIsWeb) return;
+
+    setState(() => _callState = CallState.connecting);
+
+    final isVideo = widget.callType == CallType.video;
+    webrtc.injectMediaElements(isVideo);
+
+    // 创建PeerConnection
+    final success = await webrtc.createPeerConnection(isVideo: isVideo);
+    if (!success) {
+      _setError('无法获取麦克风${isVideo ? "/摄像头" : ""}权限');
+      return;
+    }
+
+    // 设置远端Offer并创建Answer
+    final offerSdp = widget.incomingOffer?['sdp'] ?? '';
+    if (offerSdp.isEmpty) {
+      _setError('无效的通话请求');
+      return;
+    }
+
+    final answerSdp = await webrtc.createAnswer(offerSdp);
+    if (answerSdp == null) {
+      _setError('接听失败');
+      return;
+    }
+
+    // 发送Answer
+    WsService.instance.sendCallAnswer(
+      targetUserId: widget.targetUserId,
+      sdp: answerSdp,
+    );
+
+    // 开始发送ICE候选
+    _startIceCandidateTimer();
+
+    if (mounted) {
+      setState(() => _callState = CallState.connected);
+      _startDurationTimer();
+    }
+  }
+
+  /// 拒绝来电
+  void _rejectCall() {
+    WsService.instance.sendCallReject(
+      targetUserId: widget.targetUserId,
+      reason: 'rejected',
+    );
+    _endCall();
+  }
+
+  // ==================== 信令回调 ====================
+
+  /// 收到对方的Answer（主叫方）
+  void _onCallAnswer(Map<String, dynamic> msg) async {
+    final sdp = msg['sdp'];
+    if (sdp == null) return;
+
+    final sdpStr = sdp is String ? sdp : jsonEncode(sdp);
+    final success = await webrtc.setRemoteAnswer(sdpStr);
+    if (success && mounted) {
+      setState(() => _callState = CallState.connected);
+      _startDurationTimer();
+    }
+  }
+
+  /// 收到ICE候选
+  void _onIceCandidate(Map<String, dynamic> msg) {
+    final candidate = msg['candidate'];
+    if (candidate != null && candidate is Map) {
+      webrtc.addIceCandidate(Map<String, dynamic>.from(candidate));
+    }
+  }
+
+  /// 对方挂断
+  void _onCallHangup(Map<String, dynamic> msg) {
+    _endCall();
+  }
+
+  /// 对方拒绝
+  void _onCallReject(Map<String, dynamic> msg) {
+    final reason = msg['reason'] ?? 'rejected';
+    if (mounted) {
+      setState(() {
+        _callState = CallState.ended;
+        _errorMessage = reason == 'busy' ? '对方忙线中' : '对方已拒绝';
+      });
+    }
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) Navigator.of(context).pop();
+    });
+  }
+
+  /// 通话错误
+  void _onCallError(Map<String, dynamic> msg) {
+    _setError(msg['message'] ?? '通话失败');
+  }
+
+  // ==================== ICE候选定时发送 ====================
+
+  void _startIceCandidateTimer() {
+    _iceTimer?.cancel();
+    _iceTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      final candidates = webrtc.getIceCandidates();
+      for (final c in candidates) {
+        try {
+          final candidate = jsonDecode(c);
+          WsService.instance.sendIceCandidate(
+            targetUserId: widget.targetUserId,
+            candidate: Map<String, dynamic>.from(candidate),
+          );
+        } catch (e) {
+          // 忽略解析错误
+        }
+      }
+
+      // 检查连接状态
+      if (_callState == CallState.connected) {
+        final state = webrtc.getIceConnectionState();
+        if (state == 'disconnected' || state == 'failed' || state == 'closed') {
+          _endCall();
+        }
+      }
+    });
+  }
+
+  // ==================== 通话控制 ====================
+
+  void _hangUp({String reason = 'hangup'}) {
+    WsService.instance.sendCallHangup(
+      targetUserId: widget.targetUserId,
+      reason: reason,
+    );
+    _endCall();
+  }
+
+  void _endCall() {
+    _durationTimer?.cancel();
+    _iceTimer?.cancel();
+    webrtc.closeConnection();
+    webrtc.removeMediaElements();
+    if (mounted) {
+      setState(() => _callState = CallState.ended);
+      Future.delayed(const Duration(seconds: 1), () {
+        if (mounted) Navigator.of(context).pop();
+      });
+    }
+  }
+
+  void _setError(String message) {
+    if (mounted) {
+      setState(() {
+        _callState = CallState.error;
+        _errorMessage = message;
+      });
+    }
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted) {
+        webrtc.closeConnection();
+        webrtc.removeMediaElements();
+        Navigator.of(context).pop();
       }
     });
   }
@@ -77,6 +328,20 @@ class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
     });
   }
 
+  void _toggleMute() {
+    setState(() => _isMuted = !_isMuted);
+    webrtc.toggleMute(_isMuted);
+  }
+
+  void _toggleVideo() {
+    setState(() => _isVideoEnabled = !_isVideoEnabled);
+    webrtc.toggleVideo(_isVideoEnabled);
+  }
+
+  void _switchCamera() {
+    webrtc.switchCamera();
+  }
+
   String get _durationText {
     final m = (_durationSeconds ~/ 60).toString().padLeft(2, '0');
     final s = (_durationSeconds % 60).toString().padLeft(2, '0');
@@ -85,6 +350,8 @@ class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
 
   String get _statusText {
     switch (_callState) {
+      case CallState.initializing:
+        return '正在准备...';
       case CallState.ringing:
         return widget.isIncoming ? '来电...' : '呼叫中...';
       case CallState.connecting:
@@ -93,43 +360,22 @@ class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
         return _durationText;
       case CallState.ended:
         return '通话结束';
+      case CallState.error:
+        return _errorMessage;
     }
   }
-
-  void _acceptCall() {
-    setState(() => _callState = CallState.connecting);
-    Future.delayed(const Duration(milliseconds: 500), () {
-      if (mounted) {
-        setState(() => _callState = CallState.connected);
-        _startDurationTimer();
-      }
-    });
-  }
-
-  void _hangUp() {
-    _durationTimer?.cancel();
-    setState(() => _callState = CallState.ended);
-    Future.delayed(const Duration(seconds: 1), () {
-      if (mounted) Navigator.of(context).pop();
-    });
-  }
-
-  void _rejectCall() {
-    setState(() => _callState = CallState.ended);
-    Future.delayed(const Duration(milliseconds: 500), () {
-      if (mounted) Navigator.of(context).pop();
-    });
-  }
-
-  void _toggleMute() => setState(() => _isMuted = !_isMuted);
-  void _toggleSpeaker() => setState(() => _isSpeakerOn = !_isSpeakerOn);
-  void _toggleVideo() => setState(() => _isVideoEnabled = !_isVideoEnabled);
-  void _switchCamera() => setState(() => _isFrontCamera = !_isFrontCamera);
 
   @override
   void dispose() {
     _durationTimer?.cancel();
+    _iceTimer?.cancel();
     _pulseController.dispose();
+    _restoreCallbacks();
+    // 确保资源释放
+    if (_callState != CallState.ended) {
+      webrtc.closeConnection();
+      webrtc.removeMediaElements();
+    }
     super.dispose();
   }
 
@@ -141,43 +387,14 @@ class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
       backgroundColor: isVideo ? Colors.black : const Color(0xFF1A1A2E),
       body: SafeArea(
         child: Stack(children: [
-          // 视频通话背景
+          // 视频通话时的背景提示（真实视频通过HTML元素渲染在Flutter层之下）
           if (isVideo && _callState == CallState.connected) ...[
-            // 远端视频（全屏）
             Container(
               width: double.infinity,
               height: double.infinity,
-              color: Colors.grey.shade900,
-              child: Center(
-                child: Icon(Icons.videocam, size: 80, color: Colors.grey.shade700),
-              ),
-            ),
-            // 本地视频（小窗口）
-            Positioned(
-              top: 16,
-              right: 16,
-              child: GestureDetector(
-                onTap: _switchCamera,
-                child: Container(
-                  width: 120,
-                  height: 160,
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade800,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white24, width: 2),
-                    boxShadow: [BoxShadow(color: Colors.black45, blurRadius: 10)],
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: _isVideoEnabled
-                      ? Center(child: Icon(Icons.person, size: 48, color: Colors.grey.shade600))
-                      : Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-                          Icon(Icons.videocam_off, size: 32, color: Colors.white54),
-                          const SizedBox(height: 4),
-                          const Text('摄像头已关', style: TextStyle(color: Colors.white54, fontSize: 10)),
-                        ])),
-                  ),
-                ),
+              color: Colors.black.withOpacity(0.3),
+              child: const Center(
+                child: Text('视频通话中', style: TextStyle(color: Colors.white38, fontSize: 14)),
               ),
             ),
           ],
@@ -187,36 +404,53 @@ class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
             Column(
               children: [
                 const Spacer(flex: 2),
-                // 头像
                 _buildAvatar(),
                 const SizedBox(height: 24),
-                // 用户名
                 Text(
                   widget.targetUserName,
                   style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 8),
-                // 状态
                 Text(
                   _statusText,
                   style: TextStyle(
-                    color: _callState == CallState.connected ? Colors.greenAccent : Colors.white70,
+                    color: _callState == CallState.connected ? Colors.greenAccent
+                         : _callState == CallState.error ? Colors.redAccent
+                         : Colors.white70,
                     fontSize: 16,
                   ),
                 ),
                 const SizedBox(height: 8),
-                // 通话类型标签
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                   decoration: BoxDecoration(
                     color: Colors.white.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Text(
-                    isVideo ? '视频通话' : '语音通话',
-                    style: const TextStyle(color: Colors.white60, fontSize: 12),
-                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(
+                      isVideo ? Icons.videocam : Icons.call,
+                      color: Colors.white60,
+                      size: 14,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      isVideo ? '视频通话' : '语音通话',
+                      style: const TextStyle(color: Colors.white60, fontSize: 12),
+                    ),
+                  ]),
                 ),
+                if (_callState == CallState.error) ...[
+                  const SizedBox(height: 16),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 32),
+                    child: Text(
+                      _errorMessage,
+                      style: const TextStyle(color: Colors.redAccent, fontSize: 14),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ],
                 const Spacer(flex: 3),
               ],
             ),
@@ -282,6 +516,23 @@ class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
   Widget _buildControls() {
     final isVideo = widget.callType == CallType.video;
 
+    // 错误状态 - 只显示关闭按钮
+    if (_callState == CallState.error) {
+      return Center(
+        child: _buildControlButton(
+          icon: Icons.close,
+          label: '关闭',
+          color: Colors.red,
+          onTap: () {
+            webrtc.closeConnection();
+            webrtc.removeMediaElements();
+            Navigator.of(context).pop();
+          },
+          size: 64,
+        ),
+      );
+    }
+
     // 来电等待接听
     if (widget.isIncoming && _callState == CallState.ringing) {
       return Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
@@ -304,7 +555,6 @@ class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
 
     // 通话中或呼叫中
     return Column(mainAxisSize: MainAxisSize.min, children: [
-      // 功能按钮行
       if (_callState == CallState.connected)
         Padding(
           padding: const EdgeInsets.only(bottom: 32),
@@ -314,12 +564,6 @@ class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
               label: _isMuted ? '已静音' : '静音',
               color: _isMuted ? Colors.red : Colors.white24,
               onTap: _toggleMute,
-            ),
-            _buildControlButton(
-              icon: _isSpeakerOn ? Icons.volume_up : Icons.volume_down,
-              label: _isSpeakerOn ? '扬声器' : '听筒',
-              color: _isSpeakerOn ? AppColors.primary : Colors.white24,
-              onTap: _toggleSpeaker,
             ),
             if (isVideo) _buildControlButton(
               icon: _isVideoEnabled ? Icons.videocam : Icons.videocam_off,
@@ -335,12 +579,11 @@ class _CallPageState extends State<CallPage> with TickerProviderStateMixin {
             ),
           ]),
         ),
-      // 挂断按钮
       _buildControlButton(
         icon: Icons.call_end,
         label: _callState == CallState.ringing ? '取消' : '挂断',
         color: Colors.red,
-        onTap: _hangUp,
+        onTap: () => _hangUp(),
         size: 64,
       ),
     ]);

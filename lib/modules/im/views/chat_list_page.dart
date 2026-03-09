@@ -351,19 +351,8 @@ class _ChatListPageState extends State<ChatListPage> with WidgetsBindingObserver
       displayMsg = '${conv['last_sender_name']}: $lastMsg';
     }
 
-    return Dismissible(
-      key: Key(conv['id'].toString()),
-      direction: DismissDirection.endToStart,
-      background: Container(
-        color: AppColors.error,
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.only(right: 20),
-        child: const Icon(Icons.delete, color: Colors.white),
-      ),
-      confirmDismiss: (_) async {
-        _showConversationActions(conv);
-        return false;
-      },
+    return Material(
+      color: isPinned ? AppColors.primary.withOpacity(0.04) : Colors.transparent,
       child: InkWell(
         onTap: () {
           Navigator.push(context, MaterialPageRoute(
@@ -372,7 +361,6 @@ class _ChatListPageState extends State<ChatListPage> with WidgetsBindingObserver
         },
         onLongPress: () => _showConversationActions(conv),
         child: Container(
-          color: isPinned ? AppColors.primary.withOpacity(0.04) : null,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           child: Row(children: [
             Stack(children: [

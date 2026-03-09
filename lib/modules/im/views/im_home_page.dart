@@ -2,10 +2,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../../config/theme.dart';
 import '../../../services/api_service.dart';
+import '../../../services/ws_service.dart';
 import 'chat_list_page.dart';
 import 'contacts_page.dart';
 import 'workbench_page.dart';
 import 'profile_page.dart';
+import 'call_page.dart';
 
 class ImHomePage extends StatefulWidget {
   const ImHomePage({super.key});
@@ -45,6 +47,42 @@ class _ImHomePageState extends State<ImHomePage> with WidgetsBindingObserver {
     _unreadTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (mounted) _loadUnreadCount();
     });
+
+    // 连接WebSocket并设置来电回调
+    _connectWebSocket();
+  }
+
+  /// 连接WebSocket并监听来电
+  void _connectWebSocket() {
+    final ws = WsService.instance;
+
+    // 设置来电回调
+    ws.onCallOffer = _handleIncomingCall;
+
+    // 连接
+    ws.connect();
+  }
+
+  /// 处理来电
+  void _handleIncomingCall(Map<String, dynamic> data) {
+    if (!mounted) return;
+
+    final fromUserId = data['from_user_id'] ?? '';
+    final callType = data['call_type'] ?? 'voice';
+    final sdp = data['sdp'] ?? '';
+
+    if (fromUserId.isEmpty || sdp.isEmpty) return;
+
+    // 弹出来电页面
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => CallPage(
+        targetUserId: fromUserId,
+        targetUserName: fromUserId, // 暂时用userId，后续可以查询用户信息
+        callType: callType == 'video' ? CallType.video : CallType.voice,
+        isIncoming: true,
+        incomingOffer: data,
+      ),
+    ));
   }
 
   Future<void> _loadFeatures() async {
@@ -53,7 +91,6 @@ class _ImHomePageState extends State<ImHomePage> with WidgetsBindingObserver {
       setState(() {
         _features = Map<String, dynamic>.from(res.data);
         _featuresLoaded = true;
-        // 如果当前选中的tab索引超出范围，重置为0
         if (_currentIndex >= _pages.length) _currentIndex = 0;
       });
     }
@@ -70,6 +107,10 @@ class _ImHomePageState extends State<ImHomePage> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed && mounted) {
       _loadUnreadCount();
+      // 恢复时重连WebSocket
+      if (!WsService.instance.isConnected) {
+        WsService.instance.reconnect();
+      }
     }
   }
 
@@ -101,7 +142,6 @@ class _ImHomePageState extends State<ImHomePage> with WidgetsBindingObserver {
           currentIndex: _currentIndex,
           onTap: (i) {
             setState(() => _currentIndex = i);
-            // 切换到消息Tab时立即刷新
             if (i == 0) _loadUnreadCount();
           },
           items: [
